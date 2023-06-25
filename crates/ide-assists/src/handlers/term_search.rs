@@ -17,27 +17,11 @@ pub(crate) fn term_search(acc: &mut Assists, ctx: &AssistContext<'_>) -> Option<
         return None;
     }
 
-    let param = ast::Expr::cast(syntax.clone());
-
-    if param.is_none() {
-        return acc.add(
-            AssistId("term_search", AssistKind::Generate),
-            "Term search",
-            goal_range,
-            |builder| {
-                builder.replace(goal_range, format!("todo!(\"{}\")", "nono"));
-            },
-        );
-    };
-
-    let target_ty = ctx.sema.type_of_expr(&param.unwrap());
-    let ty = if let Some(target_ty) = target_ty {
-        format!("{}", target_ty.original().display(ctx.db()))
-    } else {
-        "none".to_string()
-    };
+    let parent = syntax.parent()?;
+    let target_ty = ctx.sema.type_of_expr(&ast::Expr::cast(parent.clone())?)?;
 
     acc.add(AssistId("term_search", AssistKind::Generate), "Term search", goal_range, |builder| {
-        builder.replace(goal_range, format!("todo!(\"{}\")", ty));
+        builder
+            .replace(goal_range, format!("todo!(\"{}\")", target_ty.adjusted().display(ctx.db())));
     })
 }
