@@ -210,6 +210,7 @@ mod handlers {
     mod unwrap_result_return_type;
     mod unqualify_method_call;
     mod wrap_return_type_in_result;
+    mod term_search;
 
     pub(crate) fn all() -> &'static [Handler] {
         &[
@@ -347,6 +348,7 @@ mod handlers {
             inline_macro::inline_macro,
             // Are you sure you want to add new assist here, and not to the
             // sorted list above?
+            term_search::term_search,
         ]
     }
 }
