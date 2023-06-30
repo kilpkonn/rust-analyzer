@@ -17,6 +17,7 @@ pub type ScopeId = Idx<ScopeData>;
 pub struct ExprScopes {
     scopes: Arena<ScopeData>,
     scope_entries: Arena<ScopeEntry>,
+
     scope_by_expr: FxHashMap<ExprId, ScopeId>,
 }
 
