@@ -1,5 +1,7 @@
 use hir::HirDisplay;
-use hir::{db::HirDatabase, Adt, Const, Function, Local, Static, StructKind, Type, Variant};
+use hir::{
+    db::HirDatabase, Adt, Const, Function, Local, Static, Struct, StructKind, Type, Variant,
+};
 use ide_db::assists::{AssistId, AssistKind};
 use itertools::Itertools;
 
@@ -18,6 +20,7 @@ enum TypeInhabitant {
 enum TypeTransformation {
     Function(Function),
     Variant { variant: Variant, in_scope: bool },
+    Struct(Struct),
 }
 
 impl TypeTransformation {
@@ -27,16 +30,17 @@ impl TypeTransformation {
             Self::Variant { variant, .. } => {
                 variant.parent_enum(db).ty(db).could_unify_with(db, ty)
             }
+            Self::Struct(it) => it.ty(db).could_unify_with(db, ty),
         }
     }
 
     fn gen_source_code(&self, params: &[TypeTree], ctx: &AssistContext<'_>) -> String {
         match self {
-            TypeTransformation::Function(it) => {
+            Self::Function(it) => {
                 let args = params.iter().map(|f| f.gen_source_code(ctx)).join(", ");
                 format!("{}({})", it.name(ctx.db()).display(ctx.db()).to_string(), args)
             }
-            TypeTransformation::Variant { variant, in_scope } => {
+            Self::Variant { variant, in_scope } => {
                 let inner = match variant.kind(ctx.db()) {
                     StructKind::Tuple => {
                         let args = params.iter().map(|f| f.gen_source_code(ctx)).join(", ");
@@ -73,9 +77,24 @@ impl TypeTransformation {
                     format!(
                         "{}::{}",
                         variant.parent_enum(ctx.db()).name(ctx.db()).display(ctx.db()).to_string(),
-                        inner
+                        inner,
                     )
                 }
+            }
+            Self::Struct(it) => {
+                let fields = it.fields(ctx.db());
+                let args = params
+                    .iter()
+                    .zip(fields.iter())
+                    .map(|(a, f)| {
+                        format!(
+                            "{}: {}",
+                            f.name(ctx.db()).display(ctx.db()).to_string(),
+                            a.gen_source_code(ctx)
+                        )
+                    })
+                    .join(", ");
+                format!("{} {{ {} }}", it.name(ctx.db()).display(ctx.db()).to_string(), args)
             }
         }
     }
@@ -133,6 +152,9 @@ pub(crate) fn term_search(acc: &mut Assists, ctx: &AssistContext<'_>) -> Option<
                     .into_iter()
                     .map(|v| TypeTransformation::Variant { variant: v, in_scope: false });
                 funcs.extend(variants);
+            }
+            hir::ScopeDef::ModuleDef(hir::ModuleDef::Adt(Adt::Struct(it))) => {
+                funcs.push(TypeTransformation::Struct(it));
             }
             hir::ScopeDef::Local(it) => {
                 vars.push(TypeInhabitant::Local(it));
@@ -212,9 +234,25 @@ fn dfs_term_search(
                             })
                         })
                     })?;
-
                 let node = TypeTree::TypeTransformation {
                     func: TypeTransformation::Variant { variant: *variant, in_scope: *in_scope },
+                    params: fields,
+                };
+                Some(node)
+            }
+            TypeTransformation::Struct(strukt) => {
+                let fields: Vec<TypeTree> =
+                    strukt.fields(db).into_iter().fold(Some(Vec::new()), |acc, field| {
+                        acc.and_then(|mut fields| {
+                            dfs_term_search(&field.ty(db), vars, funcs, db).and_then(|field| {
+                                fields.push(field);
+                                Some(fields)
+                            })
+                        })
+                    })?;
+
+                let node = TypeTree::TypeTransformation {
+                    func: TypeTransformation::Struct(*strukt),
                     params: fields,
                 };
                 Some(node)
