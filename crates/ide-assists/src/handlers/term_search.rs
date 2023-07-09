@@ -1,8 +1,10 @@
-use hir::HirDisplay;
 use hir::{
-    db::HirDatabase, Adt, Const, Function, Local, Static, Struct, StructKind, Type, Variant,
+    db::HirDatabase, Adt, Const, Function, Local, ModuleDef, Static, Struct, StructKind, Type,
+    Variant,
 };
+use hir::{HirDisplay, Module, ScopeDef};
 use ide_db::assists::{AssistId, AssistKind};
+use ide_db::FxHashSet;
 use itertools::Itertools;
 
 use syntax::{ast, AstNode};
@@ -19,7 +21,7 @@ enum TypeInhabitant {
 #[derive(Clone, Eq, Hash, PartialEq)]
 enum TypeTransformation {
     Function(Function),
-    Variant { variant: Variant, in_scope: bool },
+    Variant(Variant),
     Struct(Struct),
 }
 
@@ -27,23 +29,49 @@ impl TypeTransformation {
     fn could_unify_with(&self, db: &dyn HirDatabase, ty: &Type) -> bool {
         match self {
             Self::Function(it) => it.ret_type(db).could_unify_with(db, ty),
-            Self::Variant { variant, .. } => {
-                variant.parent_enum(db).ty(db).could_unify_with(db, ty)
-            }
+            Self::Variant(it) => it.parent_enum(db).ty(db).could_unify_with(db, ty),
             Self::Struct(it) => it.ty(db).could_unify_with(db, ty),
         }
     }
 
-    fn gen_source_code(&self, params: &[TypeTree], ctx: &AssistContext<'_>) -> String {
+    fn gen_source_code(
+        &self,
+        params: &[TypeTree],
+        items_in_scope: &FxHashSet<ScopeDef>,
+        ctx: &AssistContext<'_>,
+    ) -> String {
+        let gen_module_prefix = |mut module: Module| {
+            let mut prefix = String::new();
+            while !items_in_scope.contains(&ScopeDef::ModuleDef(ModuleDef::Module(module))) {
+                let mod_name = match module.name(ctx.db()) {
+                    Some(m) => m.display(ctx.db()).to_string(),
+                    None => String::from("<no_mod_name>")
+                };
+                prefix = format!("{}::{}", mod_name, prefix);
+                match module.parent(ctx.db()) {
+                   Some(m) => module = m,
+                   None => break
+                };
+            }
+            if prefix == "" {
+                prefix
+            } else {
+                format!("{}::", prefix)
+            }
+        };
         match self {
             Self::Function(it) => {
-                let args = params.iter().map(|f| f.gen_source_code(ctx)).join(", ");
-                format!("{}({})", it.name(ctx.db()).display(ctx.db()).to_string(), args)
+                let args = params.iter().map(|f| f.gen_source_code(items_in_scope, ctx)).join(", ");
+                let sig = format!("{}({})", it.name(ctx.db()).display(ctx.db()).to_string(), args);
+                format!("{}{}", gen_module_prefix(it.module(ctx.db())), sig)
             }
-            Self::Variant { variant, in_scope } => {
+            Self::Variant(variant) => {
                 let inner = match variant.kind(ctx.db()) {
                     StructKind::Tuple => {
-                        let args = params.iter().map(|f| f.gen_source_code(ctx)).join(", ");
+                        let args = params
+                            .iter()
+                            .map(|f| f.gen_source_code(items_in_scope, ctx))
+                            .join(", ");
                         format!(
                             "{}({})",
                             variant.name(ctx.db()).display(ctx.db()).to_string(),
@@ -59,7 +87,7 @@ impl TypeTransformation {
                                 format!(
                                     "{}: {}",
                                     f.name(ctx.db()).display(ctx.db()).to_string(),
-                                    a.gen_source_code(ctx)
+                                    a.gen_source_code(items_in_scope, ctx)
                                 )
                             })
                             .join(", ");
@@ -71,14 +99,15 @@ impl TypeTransformation {
                     }
                     StructKind::Unit => variant.name(ctx.db()).display(ctx.db()).to_string(),
                 };
-                if *in_scope {
+                if items_in_scope.contains(&ScopeDef::ModuleDef(ModuleDef::Variant(*variant))) {
                     inner
                 } else {
-                    format!(
+                    let sig = format!(
                         "{}::{}",
                         variant.parent_enum(ctx.db()).name(ctx.db()).display(ctx.db()).to_string(),
                         inner,
-                    )
+                    );
+                    format!("{}{}", gen_module_prefix(variant.module(ctx.db())), sig)
                 }
             }
             Self::Struct(it) => {
@@ -90,11 +119,13 @@ impl TypeTransformation {
                         format!(
                             "{}: {}",
                             f.name(ctx.db()).display(ctx.db()).to_string(),
-                            a.gen_source_code(ctx)
+                            a.gen_source_code(items_in_scope, ctx)
                         )
                     })
                     .join(", ");
-                format!("{} {{ {} }}", it.name(ctx.db()).display(ctx.db()).to_string(), args)
+                let sig =
+                    format!("{} {{ {} }}", it.name(ctx.db()).display(ctx.db()).to_string(), args);
+                format!("{}{}", gen_module_prefix(it.module(ctx.db())), sig)
             }
         }
     }
@@ -131,32 +162,33 @@ pub(crate) fn term_search(acc: &mut Assists, ctx: &AssistContext<'_>) -> Option<
     let mut funcs = Vec::default();
     let mut vars = Vec::default();
     let mut names = Vec::default();
+    let mut items_in_scope = FxHashSet::default();
+    items_in_scope.insert(ScopeDef::ModuleDef(ModuleDef::Module(scope.module())));
     scope.process_all_names(&mut |name, def| {
         names.push(format!("{} - {:?}", name.display(ctx.db()).to_string(), def));
+        items_in_scope.insert(def);
         match def {
-            hir::ScopeDef::ModuleDef(hir::ModuleDef::Function(it)) => {
+            ScopeDef::ModuleDef(ModuleDef::Function(it)) => {
                 funcs.push(TypeTransformation::Function(it));
             }
-            hir::ScopeDef::ModuleDef(hir::ModuleDef::Const(it)) => {
+            ScopeDef::ModuleDef(ModuleDef::Const(it)) => {
                 vars.push(TypeInhabitant::Const(it));
             }
-            hir::ScopeDef::ModuleDef(hir::ModuleDef::Static(it)) => {
+            ScopeDef::ModuleDef(ModuleDef::Static(it)) => {
                 vars.push(TypeInhabitant::Static(it));
             }
-            hir::ScopeDef::ModuleDef(hir::ModuleDef::Variant(it)) => {
-                funcs.push(TypeTransformation::Variant { variant: it, in_scope: true });
+            ScopeDef::ModuleDef(ModuleDef::Variant(it)) => {
+                funcs.push(TypeTransformation::Variant(it));
             }
-            hir::ScopeDef::ModuleDef(hir::ModuleDef::Adt(Adt::Enum(it))) => {
-                let variants = it
-                    .variants(ctx.db())
-                    .into_iter()
-                    .map(|v| TypeTransformation::Variant { variant: v, in_scope: false });
+            ScopeDef::ModuleDef(ModuleDef::Adt(Adt::Enum(it))) => {
+                let variants =
+                    it.variants(ctx.db()).into_iter().map(|v| TypeTransformation::Variant(v));
                 funcs.extend(variants);
             }
-            hir::ScopeDef::ModuleDef(hir::ModuleDef::Adt(Adt::Struct(it))) => {
+            ScopeDef::ModuleDef(ModuleDef::Adt(Adt::Struct(it))) => {
                 funcs.push(TypeTransformation::Struct(it));
             }
-            hir::ScopeDef::Local(it) => {
+            ScopeDef::Local(it) => {
                 vars.push(TypeInhabitant::Local(it));
             }
             _ => {}
@@ -165,10 +197,8 @@ pub(crate) fn term_search(acc: &mut Assists, ctx: &AssistContext<'_>) -> Option<
 
     let path = dfs_term_search(&target_ty, &vars, &funcs, ctx.db())?;
 
-    // let a: i32 = todo!();
-
     acc.add(AssistId("term_search", AssistKind::Generate), "Term search", goal_range, |builder| {
-        builder.replace(goal_range, path.gen_source_code(ctx));
+        builder.replace(goal_range, path.gen_source_code(&items_in_scope, ctx));
     })
 }
 
@@ -181,7 +211,11 @@ enum TypeTree {
 
 impl TypeTree {
     /// TODO: Should not be optional
-    fn gen_source_code(&self, ctx: &AssistContext<'_>) -> String {
+    fn gen_source_code(
+        &self,
+        items_in_scope: &FxHashSet<ScopeDef>,
+        ctx: &AssistContext<'_>,
+    ) -> String {
         match self {
             TypeTree::TypeInhabitant(it) => match it {
                 TypeInhabitant::Const(it) => it.name(ctx.db()).expect("Sum Ting Wong!?!"),
@@ -190,7 +224,9 @@ impl TypeTree {
             }
             .display(ctx.db())
             .to_string(),
-            TypeTree::TypeTransformation { func, params } => func.gen_source_code(&params, ctx),
+            TypeTree::TypeTransformation { func, params } => {
+                func.gen_source_code(&params, items_in_scope, ctx)
+            }
         }
     }
 }
@@ -206,7 +242,7 @@ fn dfs_term_search(
     };
 
     let func =
-        funcs.iter().filter(|func| func.could_unify_with(db, goal)).find_map(|func| match func {
+        funcs.iter().filter(|func| func.could_unify_with(db, goal)).find_map(|tt| match tt {
             TypeTransformation::Function(func) => {
                 let params: Vec<TypeTree> =
                     func.assoc_fn_params(db).into_iter().fold(Some(Vec::new()), |acc, param| {
@@ -218,13 +254,10 @@ fn dfs_term_search(
                         })
                     })?;
 
-                let node = TypeTree::TypeTransformation {
-                    func: TypeTransformation::Function(*func),
-                    params,
-                };
+                let node = TypeTree::TypeTransformation { func: tt.clone(), params };
                 Some(node)
             }
-            TypeTransformation::Variant { variant, in_scope } => {
+            TypeTransformation::Variant(variant) => {
                 let fields: Vec<TypeTree> =
                     variant.fields(db).into_iter().fold(Some(Vec::new()), |acc, field| {
                         acc.and_then(|mut fields| {
@@ -234,10 +267,7 @@ fn dfs_term_search(
                             })
                         })
                     })?;
-                let node = TypeTree::TypeTransformation {
-                    func: TypeTransformation::Variant { variant: *variant, in_scope: *in_scope },
-                    params: fields,
-                };
+                let node = TypeTree::TypeTransformation { func: tt.clone(), params: fields };
                 Some(node)
             }
             TypeTransformation::Struct(strukt) => {
@@ -251,13 +281,14 @@ fn dfs_term_search(
                         })
                     })?;
 
-                let node = TypeTree::TypeTransformation {
-                    func: TypeTransformation::Struct(*strukt),
-                    params: fields,
-                };
+                let node = TypeTree::TypeTransformation { func: tt.clone(), params: fields };
                 Some(node)
             }
         });
 
-    func
+    if func.is_some() {
+        return func;
+    }
+
+    None
 }
