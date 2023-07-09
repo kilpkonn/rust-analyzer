@@ -18,11 +18,50 @@ enum TypeInhabitant {
     Local(Local),
 }
 
+impl TypeInhabitant {
+    fn gen_source_code(
+        &self,
+        items_in_scope: &FxHashSet<ScopeDef>,
+        ctx: &AssistContext<'_>,
+    ) -> String {
+        let (name, module) = match self {
+            TypeInhabitant::Const(it) => {
+                (it.name(ctx.db()).expect("Sum Ting Wong!?!"), it.module(ctx.db()))
+            }
+            TypeInhabitant::Static(it) => (it.name(ctx.db()), it.module(ctx.db())),
+            TypeInhabitant::Local(it) => (it.name(ctx.db()), it.module(ctx.db())),
+        };
+        let name = name.display(ctx.db()).to_string();
+        let prefix = gen_module_prefix(module, items_in_scope, ctx.db());
+        format!("{}{}", prefix, name)
+    }
+}
+
 #[derive(Clone, Eq, Hash, PartialEq)]
 enum TypeTransformation {
     Function(Function),
     Variant(Variant),
     Struct(Struct),
+}
+
+fn gen_module_prefix(
+    mut module: Module,
+    items_in_scope: &FxHashSet<ScopeDef>,
+    db: &dyn HirDatabase,
+) -> String {
+    let mut prefix = String::new();
+    while !items_in_scope.contains(&ScopeDef::ModuleDef(ModuleDef::Module(module))) {
+        let mod_name = match module.name(db) {
+            Some(m) => m.display(db.upcast()).to_string(),
+            None => String::from("<no_mod_name>"),
+        };
+        prefix = format!("{}::{}", mod_name, prefix);
+        match module.parent(db) {
+            Some(m) => module = m,
+            None => break,
+        };
+    }
+    prefix
 }
 
 impl TypeTransformation {
@@ -40,30 +79,15 @@ impl TypeTransformation {
         items_in_scope: &FxHashSet<ScopeDef>,
         ctx: &AssistContext<'_>,
     ) -> String {
-        let gen_module_prefix = |mut module: Module| {
-            let mut prefix = String::new();
-            while !items_in_scope.contains(&ScopeDef::ModuleDef(ModuleDef::Module(module))) {
-                let mod_name = match module.name(ctx.db()) {
-                    Some(m) => m.display(ctx.db()).to_string(),
-                    None => String::from("<no_mod_name>")
-                };
-                prefix = format!("{}::{}", mod_name, prefix);
-                match module.parent(ctx.db()) {
-                   Some(m) => module = m,
-                   None => break
-                };
-            }
-            if prefix == "" {
-                prefix
-            } else {
-                format!("{}::", prefix)
-            }
-        };
         match self {
             Self::Function(it) => {
                 let args = params.iter().map(|f| f.gen_source_code(items_in_scope, ctx)).join(", ");
                 let sig = format!("{}({})", it.name(ctx.db()).display(ctx.db()).to_string(), args);
-                format!("{}{}", gen_module_prefix(it.module(ctx.db())), sig)
+                format!(
+                    "{}{}",
+                    gen_module_prefix(it.module(ctx.db()), items_in_scope, ctx.db()),
+                    sig
+                )
             }
             Self::Variant(variant) => {
                 let inner = match variant.kind(ctx.db()) {
@@ -107,7 +131,11 @@ impl TypeTransformation {
                         variant.parent_enum(ctx.db()).name(ctx.db()).display(ctx.db()).to_string(),
                         inner,
                     );
-                    format!("{}{}", gen_module_prefix(variant.module(ctx.db())), sig)
+                    format!(
+                        "{}{}",
+                        gen_module_prefix(variant.module(ctx.db()), items_in_scope, ctx.db()),
+                        sig
+                    )
                 }
             }
             Self::Struct(it) => {
@@ -125,7 +153,11 @@ impl TypeTransformation {
                     .join(", ");
                 let sig =
                     format!("{} {{ {} }}", it.name(ctx.db()).display(ctx.db()).to_string(), args);
-                format!("{}{}", gen_module_prefix(it.module(ctx.db())), sig)
+                format!(
+                    "{}{}",
+                    gen_module_prefix(it.module(ctx.db()), items_in_scope, ctx.db()),
+                    sig
+                )
             }
         }
     }
@@ -164,9 +196,13 @@ pub(crate) fn term_search(acc: &mut Assists, ctx: &AssistContext<'_>) -> Option<
     let mut names = Vec::default();
     let mut items_in_scope = FxHashSet::default();
     items_in_scope.insert(ScopeDef::ModuleDef(ModuleDef::Module(scope.module())));
-    scope.process_all_names(&mut |name, def| {
-        names.push(format!("{} - {:?}", name.display(ctx.db()).to_string(), def));
-        items_in_scope.insert(def);
+
+    fn process_def(
+        def: ScopeDef,
+        funcs: &mut Vec<TypeTransformation>,
+        vars: &mut Vec<TypeInhabitant>,
+        db: &dyn HirDatabase,
+    ) {
         match def {
             ScopeDef::ModuleDef(ModuleDef::Function(it)) => {
                 funcs.push(TypeTransformation::Function(it));
@@ -181,18 +217,27 @@ pub(crate) fn term_search(acc: &mut Assists, ctx: &AssistContext<'_>) -> Option<
                 funcs.push(TypeTransformation::Variant(it));
             }
             ScopeDef::ModuleDef(ModuleDef::Adt(Adt::Enum(it))) => {
-                let variants =
-                    it.variants(ctx.db()).into_iter().map(|v| TypeTransformation::Variant(v));
+                let variants = it.variants(db).into_iter().map(|v| TypeTransformation::Variant(v));
                 funcs.extend(variants);
             }
             ScopeDef::ModuleDef(ModuleDef::Adt(Adt::Struct(it))) => {
                 funcs.push(TypeTransformation::Struct(it));
             }
+            ScopeDef::ModuleDef(ModuleDef::Module(it)) => {
+                it.declarations(db)
+                    .into_iter()
+                    .for_each(|def| process_def(ScopeDef::ModuleDef(def), funcs, vars, db));
+            }
             ScopeDef::Local(it) => {
                 vars.push(TypeInhabitant::Local(it));
             }
             _ => {}
-        }
+        };
+    }
+    scope.process_all_names(&mut |name, def| {
+        names.push(format!("{} - {:?}", name.display(ctx.db()).to_string(), def));
+        items_in_scope.insert(def);
+        process_def(def, &mut funcs, &mut vars, ctx.db());
     });
 
     let path = dfs_term_search(&target_ty, &vars, &funcs, ctx.db())?;
@@ -210,20 +255,13 @@ enum TypeTree {
 }
 
 impl TypeTree {
-    /// TODO: Should not be optional
     fn gen_source_code(
         &self,
         items_in_scope: &FxHashSet<ScopeDef>,
         ctx: &AssistContext<'_>,
     ) -> String {
         match self {
-            TypeTree::TypeInhabitant(it) => match it {
-                TypeInhabitant::Const(it) => it.name(ctx.db()).expect("Sum Ting Wong!?!"),
-                TypeInhabitant::Static(it) => it.name(ctx.db()),
-                TypeInhabitant::Local(it) => it.name(ctx.db()),
-            }
-            .display(ctx.db())
-            .to_string(),
+            TypeTree::TypeInhabitant(it) => it.gen_source_code(items_in_scope, ctx),
             TypeTree::TypeTransformation { func, params } => {
                 func.gen_source_code(&params, items_in_scope, ctx)
             }
