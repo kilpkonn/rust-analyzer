@@ -214,14 +214,17 @@ pub(crate) fn term_search(acc: &mut Assists, ctx: &AssistContext<'_>) -> Option<
     let excl = unexpanded.excl_token()?;
     let macro_name_token = excl.prev_token()?;
     let name = macro_name_token.text();
+
     if name != "todo" {
         return None;
     }
 
     let parent = syntax.parent()?;
     let target_ty = ctx.sema.type_of_expr(&ast::Expr::cast(parent.clone())?)?.adjusted();
+    dbg!(&target_ty);
 
     let scope = ctx.sema.scope(&parent)?;
+    dbg!(&scope);
 
     let mut funcs = Vec::default();
     let mut vars = Vec::default();
@@ -271,6 +274,8 @@ pub(crate) fn term_search(acc: &mut Assists, ctx: &AssistContext<'_>) -> Option<
         items_in_scope.insert(def);
         process_def(def, &mut funcs, &mut vars, ctx.db());
     });
+
+    dbg!(names);
 
     let path = dfs_term_search(&target_ty, &vars, &funcs, ctx.db(), 3, ctx)?;
 
@@ -430,6 +435,9 @@ fn dfs_term_search(
         })
         .collect();
 
+    let dbg: Vec<_> =
+        forward_pass_types.iter().map(|t| t.gen_source_code(&Default::default(), a)).collect();
+
     if let Some(tt) = forward_pass_types.iter().find(|it| it.ty(db).could_unify_with(db, goal)) {
         return Some(tt.clone());
     }
@@ -501,4 +509,48 @@ fn dfs_term_search(
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::tests::{check_assist, check_assist_not_applicable};
+
+    use super::*;
+
+    #[test]
+    fn local_item_trait_method() {
+        check_assist(
+            term_search,
+            r#"
+struct Bar;
+trait Foo {
+    fn foo(self) -> Bar;
+}
+impl Foo for i32 {
+    fn foo(self) -> Bar {
+        unimplemented!()
+    }
+}
+fn asd() -> Bar {
+    let a: i32 = 1;
+    todo$0!("asd")
+}
+"#,
+            r"
+struct Bar;
+trait Foo {
+    fn foo(self) -> Bar;
+}
+impl Foo for i32 {
+    fn foo(self) -> Bar {
+        unimplemented!()
+    }
+}
+fn asd() -> Bar {
+    let a = 1;
+    a.foo()
+}
+",
+        )
+    }
 }
