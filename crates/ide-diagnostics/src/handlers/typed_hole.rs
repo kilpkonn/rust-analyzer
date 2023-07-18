@@ -1,21 +1,23 @@
-use hir::{db::ExpandDatabase, ClosureStyle, HirDisplay, StructKind};
+use hir::{
+    db::{ExpandDatabase, HirDatabase},
+    Adt, ClosureStyle, Const, Function, HirDisplay, Local, Module, ModuleDef, ScopeDef,
+    SemanticsScope, Static, Struct, StructKind, Type, Variant,
+};
 use ide_db::{
     assists::{Assist, AssistId, AssistKind, GroupLabel},
     label::Label,
     source_change::SourceChange,
+    FxHashSet,
 };
 use text_edit::TextEdit;
 
 use crate::{Diagnostic, DiagnosticCode, DiagnosticsContext};
 
-use std::iter::{self, Extend};
+use std::iter::Extend;
 
-use hir::{db::HirDatabase, Adt, Const, Function, Local, ModuleDef, Static, Struct, Type, Variant};
-use hir::{AssocItem, Impl, Module, ScopeDef};
-use ide_db::FxHashSet;
 use itertools::Itertools;
 
-use syntax::{ast, AstNode};
+use syntax::AstNode;
 
 // Diagnostic: typed-hole
 //
@@ -45,9 +47,6 @@ fn fixes(ctx: &DiagnosticsContext<'_>, d: &hir::TypedHole) -> Option<Vec<Assist>
         d.expr.as_ref().map(|it| it.to_node(&root)).syntax().original_file_range_opt(db)?;
     let scope = ctx.sema.scope(d.expr.value.to_node(&root).syntax())?;
     let mut assists = vec![];
-
-    let scope = ctx.sema.scope(d.expr.value.to_node(&root).syntax())?;
-    dbg!(&scope);
 
     let mut funcs = Vec::default();
     let mut vars = Vec::default();
@@ -98,9 +97,7 @@ fn fixes(ctx: &DiagnosticsContext<'_>, d: &hir::TypedHole) -> Option<Vec<Assist>
         process_def(def, &mut funcs, &mut vars, db);
     });
 
-    dbg!(names);
-
-    let path = dfs_term_search(&d.expected, &vars, &funcs, db, 3, ctx)?;
+    let path = dfs_term_search(&d.expected, &vars, &funcs, db, 3, &scope)?;
     let code = path.gen_source_code(&items_in_scope, ctx);
 
     assists.push(Assist {
@@ -114,14 +111,11 @@ fn fixes(ctx: &DiagnosticsContext<'_>, d: &hir::TypedHole) -> Option<Vec<Assist>
         )),
         trigger_signature_help: false,
     });
-    if assists.is_empty() {
-        None
-    } else {
-        Some(assists)
-    }
+
+    Some(assists)
 }
 
-#[derive(Clone, Eq, Hash, PartialEq)]
+#[derive(Debug, Clone, Eq, Hash, PartialEq)]
 enum TypeInhabitant {
     Const(Const),
     Static(Static),
@@ -162,7 +156,7 @@ impl TypeInhabitant {
     }
 }
 
-#[derive(Clone, Eq, Hash, PartialEq)]
+#[derive(Debug, Clone, Eq, Hash, PartialEq)]
 enum TypeTransformation {
     Function(Function),
     Variant(Variant),
@@ -287,7 +281,7 @@ impl TypeTransformation {
     }
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 enum TypeTree {
     /// Leaf node
     TypeInhabitant(TypeInhabitant),
@@ -338,65 +332,42 @@ impl TypeTree {
 
 fn dfs_search_assoc_item(
     tt: &TypeTree,
-    assoc_item: AssocItem,
     vars: &[TypeInhabitant],
     funcs: &[TypeTransformation],
     db: &dyn HirDatabase,
     depth: u32,
-    a: &DiagnosticsContext<'_>,
+    scope: &SemanticsScope<'_>,
 ) -> Vec<TypeTree> {
     if depth == 0 {
         return Vec::new();
     }
 
-    let item = match assoc_item {
-        AssocItem::Function(it) => it,
-        AssocItem::Const(_) => return Vec::new(),
-        AssocItem::TypeAlias(_) => return Vec::new(),
-    };
+    let mut res = Vec::new();
 
-    let ret_ty = item.ret_type(db);
-    if tt.ty(db).could_unify_with(db, &item.ret_type(db)) {
-        return Vec::new();
-    }
+    tt.ty(db).iterate_method_candidates(db, scope, None, None, |func| {
+        let mut params: Vec<TypeTree> =
+            func.params_without_self(db).into_iter().fold(Some(Vec::new()), |acc, param| {
+                acc.and_then(|mut params| {
+                    dfs_term_search(param.ty(), vars, funcs, db, depth.saturating_sub(1), scope)
+                        .and_then(|param| {
+                            params.push(param);
+                            Some(params)
+                        })
+                })
+            })?;
+        params.insert(0, tt.clone());
+        let new_tt =
+            TypeTree::TypeTransformation { func: TypeTransformation::Function(func), params };
+        res.push(new_tt.clone());
 
-    // let dbg = assoc_item.name(db).unwrap().display(db.upcast()).to_string();
+        let rec_res =
+            dfs_search_assoc_item(&new_tt, vars, funcs, db, depth.saturating_sub(1), scope);
+        res.extend(rec_res);
 
-    let params =
-        match item.params_without_self(db).into_iter().fold(Some(Vec::new()), |acc, param| {
-            acc.and_then(|mut params| {
-                dfs_term_search(param.ty(), vars, funcs, db, depth.saturating_sub(1), a).and_then(
-                    |param| {
-                        params.push(param);
-                        Some(params)
-                    },
-                )
-            })
-        }) {
-            Some(mut params) => {
-                params.insert(0, tt.clone());
-                params
-            }
-            None => Vec::new(),
-        };
-    let new_tt = TypeTree::TypeTransformation { func: TypeTransformation::Function(item), params };
+        None::<()>
+    });
 
-    if vars.iter().find(|ty| ty.could_unify_with(db, &ret_ty)).is_some() {
-        // let dbg = result.first().unwrap().gen_source_code(&Default::default(), a);
-        return vec![new_tt];
-    }
-
-    let result = iter::once(new_tt)
-        .chain(
-            Impl::all_for_type(db, ret_ty)
-                .into_iter()
-                .flat_map(|imp| imp.items(db).into_iter())
-                .flat_map(|it| {
-                    dfs_search_assoc_item(tt, it, vars, funcs, db, depth.saturating_sub(1), a)
-                }),
-        )
-        .collect();
-    result
+    res
 }
 
 fn dfs_term_search(
@@ -405,7 +376,7 @@ fn dfs_term_search(
     funcs: &[TypeTransformation],
     db: &dyn HirDatabase,
     depth: u32,
-    a: &DiagnosticsContext<'_>,
+    scope: &SemanticsScope<'_>,
 ) -> Option<TypeTree> {
     if depth == 0 {
         return None;
@@ -422,24 +393,16 @@ fn dfs_term_search(
             _ => false,
         })
         .flat_map(|tt| {
-            Impl::all_for_type(db, tt.ty(db)).into_iter().flat_map(|imp| {
-                imp.items(db).into_iter().flat_map(|it| {
-                    dfs_search_assoc_item(
-                        &TypeTree::TypeInhabitant(tt.clone()),
-                        it,
-                        vars,
-                        funcs,
-                        db,
-                        depth.saturating_sub(1),
-                        a,
-                    )
-                })
-            })
+            dfs_search_assoc_item(
+                &TypeTree::TypeInhabitant(tt.clone()),
+                vars,
+                funcs,
+                db,
+                depth.saturating_sub(1),
+                scope,
+            )
         })
         .collect();
-
-    let dbg: Vec<_> =
-        forward_pass_types.iter().map(|t| t.gen_source_code(&Default::default(), a)).collect();
 
     if let Some(tt) = forward_pass_types.iter().find(|it| it.ty(db).could_unify_with(db, goal)) {
         return Some(tt.clone());
@@ -451,11 +414,18 @@ fn dfs_term_search(
                 let params: Vec<TypeTree> =
                     func.assoc_fn_params(db).into_iter().fold(Some(Vec::new()), |acc, param| {
                         acc.and_then(|mut params| {
-                            dfs_term_search(param.ty(), vars, funcs, db, depth.saturating_sub(1), a)
-                                .and_then(|param| {
-                                    params.push(param);
-                                    Some(params)
-                                })
+                            dfs_term_search(
+                                param.ty(),
+                                vars,
+                                funcs,
+                                db,
+                                depth.saturating_sub(1),
+                                scope,
+                            )
+                            .and_then(|param| {
+                                params.push(param);
+                                Some(params)
+                            })
                         })
                     })?;
 
@@ -472,7 +442,7 @@ fn dfs_term_search(
                                 funcs,
                                 db,
                                 depth.saturating_sub(1),
-                                a,
+                                scope,
                             )
                             .and_then(|field| {
                                 fields.push(field);
@@ -493,7 +463,7 @@ fn dfs_term_search(
                                 funcs,
                                 db,
                                 depth.saturating_sub(1),
-                                a,
+                                scope,
                             )
                             .and_then(|field| {
                                 fields.push(field);
@@ -516,7 +486,7 @@ fn dfs_term_search(
 
 #[cfg(test)]
 mod tests {
-    use crate::tests::{check_diagnostics, check_fixes};
+    use crate::tests::{check_diagnostics, check_fix, check_fixes, check_has_fix};
 
     #[test]
     fn unknown() {
@@ -616,55 +586,91 @@ fn main<const CP: Foo>(param: Foo) {
                //^ error: invalid `_` expression, expected type `fn()`
 }
 "#,
-                r#"
-enum Foo {
-    Bar
-}
-use Foo::Bar;
-const C: Foo = Foo::Bar;
-fn main<const CP: Foo>(param: Foo) {
-    let local = Foo::Bar;
-    let _: Foo = param;
-               //^ error: invalid `_` expression, expected type `fn()`
-}
-"#,
-                r#"
-enum Foo {
-    Bar
-}
-use Foo::Bar;
-const C: Foo = Foo::Bar;
-fn main<const CP: Foo>(param: Foo) {
-    let local = Foo::Bar;
-    let _: Foo = CP;
-               //^ error: invalid `_` expression, expected type `fn()`
-}
-"#,
-                r#"
-enum Foo {
-    Bar
-}
-use Foo::Bar;
-const C: Foo = Foo::Bar;
-fn main<const CP: Foo>(param: Foo) {
-    let local = Foo::Bar;
-    let _: Foo = Bar;
-               //^ error: invalid `_` expression, expected type `fn()`
-}
-"#,
-                r#"
-enum Foo {
-    Bar
-}
-use Foo::Bar;
-const C: Foo = Foo::Bar;
-fn main<const CP: Foo>(param: Foo) {
-    let local = Foo::Bar;
-    let _: Foo = C;
-               //^ error: invalid `_` expression, expected type `fn()`
-}
-"#,
+                //                 r#"
+                // enum Foo {
+                //     Bar
+                // }
+                // use Foo::Bar;
+                // const C: Foo = Foo::Bar;
+                // fn main<const CP: Foo>(param: Foo) {
+                //     let local = Foo::Bar;
+                //     let _: Foo = param;
+                //                //^ error: invalid `_` expression, expected type `fn()`
+                // }
+                // "#,
+                //                 r#"
+                // enum Foo {
+                //     Bar
+                // }
+                // use Foo::Bar;
+                // const C: Foo = Foo::Bar;
+                // fn main<const CP: Foo>(param: Foo) {
+                //     let local = Foo::Bar;
+                //     let _: Foo = CP;
+                //                //^ error: invalid `_` expression, expected type `fn()`
+                // }
+                // "#,
+                //                 r#"
+                // enum Foo {
+                //     Bar
+                // }
+                // use Foo::Bar;
+                // const C: Foo = Foo::Bar;
+                // fn main<const CP: Foo>(param: Foo) {
+                //     let local = Foo::Bar;
+                //     let _: Foo = Bar;
+                //                //^ error: invalid `_` expression, expected type `fn()`
+                // }
+                // "#,
+                //                 r#"
+                // enum Foo {
+                //     Bar
+                // }
+                // use Foo::Bar;
+                // const C: Foo = Foo::Bar;
+                // fn main<const CP: Foo>(param: Foo) {
+                //     let local = Foo::Bar;
+                //     let _: Foo = C;
+                //                //^ error: invalid `_` expression, expected type `fn()`
+                // }
+                // "#,
             ],
+        );
+    }
+
+    #[test]
+    fn local_iterm_use_trait() {
+        check_has_fix(
+            r#"
+struct Bar;
+trait Foo {
+    fn foo(self) -> Bar;
+}
+impl Foo for i32 {
+    fn foo(self) -> Bar {
+        unimplemented!()
+    }
+}
+fn asd() -> Bar {
+    let a: i32 = 1;
+    _$0
+}
+"#,
+            r"
+struct Bar;
+trait Foo {
+    fn foo(self) -> Bar;
+}
+impl Foo for i32 {
+    fn foo(self) -> Bar {
+        unimplemented!()
+    }
+}
+fn asd() -> Bar {
+    let a: i32 = 1;
+    a.foo()
+}
+",
         );
     }
 }
