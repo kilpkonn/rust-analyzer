@@ -105,6 +105,7 @@ pub(crate) fn unify(
     );
     let ty1_with_vars = vars.apply(tys.value.0.clone(), Interner);
     let ty2_with_vars = vars.apply(tys.value.1.clone(), Interner);
+    dbg!(&ty1_with_vars, &ty2_with_vars);
     if !table.unify(&ty1_with_vars, &ty2_with_vars) {
         return None;
     }
