@@ -97,6 +97,8 @@ fn fixes(ctx: &DiagnosticsContext<'_>, d: &hir::TypedHole) -> Option<Vec<Assist>
         process_def(def, &mut funcs, &mut vars, db);
     });
 
+    dbg!(names);
+
     let path = dfs_term_search(&d.expected, &vars, &funcs, db, 3, &scope)?;
     let code = path.gen_source_code(&items_in_scope, ctx);
 
@@ -111,6 +113,8 @@ fn fixes(ctx: &DiagnosticsContext<'_>, d: &hir::TypedHole) -> Option<Vec<Assist>
         )),
         trigger_signature_help: false,
     });
+
+    dbg!(&assists);
 
     Some(assists)
 }
@@ -328,6 +332,10 @@ impl TypeTree {
             TypeTree::TypeTransformation { func, .. } => func.ret_ty(db),
         }
     }
+
+    fn could_unify_with(&self, db: &dyn HirDatabase, ty: &Type) -> bool {
+        self.ty(db).could_unify_with(db, ty)
+    }
 }
 
 fn dfs_search_assoc_item(
@@ -403,8 +411,15 @@ fn dfs_term_search(
             )
         })
         .collect();
+    dbg!(&forward_pass_types);
 
-    if let Some(tt) = forward_pass_types.iter().find(|it| it.ty(db).could_unify_with(db, goal)) {
+    if let Some(tt) = forward_pass_types.iter().find(|it| it.could_unify_with(db, goal)) {
+        let ret_ty = tt.ty(db);
+        dbg!(&ret_ty);
+        dbg!(ret_ty.could_unify_with(db, goal));
+        // let g = ret_ty.contains_unknown();
+        // let h = ret_ty.generic_params(db).into_iter().last().unwrap();
+        // let h2 = format!("{:?}", &h);
         return Some(tt.clone());
     }
 
@@ -486,7 +501,7 @@ fn dfs_term_search(
 
 #[cfg(test)]
 mod tests {
-    use crate::tests::{check_diagnostics, check_fix, check_fixes, check_has_fix};
+    use crate::tests::{check_diagnostics, check_fixes, check_has_fix};
 
     #[test]
     fn unknown() {
@@ -639,7 +654,7 @@ fn main<const CP: Foo>(param: Foo) {
     }
 
     #[test]
-    fn local_iterm_use_trait() {
+    fn local_item_use_trait() {
         check_has_fix(
             r#"
 struct Bar;
@@ -671,6 +686,58 @@ fn asd() -> Bar {
     a.foo()
 }
 ",
+        );
+    }
+
+    #[test]
+    fn init_struct() {
+        check_has_fix(
+            r#"struct Abc {}
+struct Qwe { a: i32, b: Abc }
+fn main() {
+    let a: i32 = 1;
+    let c: Qwe = _$0;
+}"#,
+           r#"struct Abc {}
+struct Qwe { a: i32, b: Abc }
+fn main() {
+    let a: i32 = 1;
+    let c: Qwe = Qwe { a: a, b: Abc {  } };
+}"#,
+        );
+    }
+
+    #[test]
+    fn tmp() {
+       check_has_fix(
+            r#"
+struct Bar {}
+trait Foo {
+    type Res;
+    fn foo(&self) -> Self::Res;
+}
+impl Foo for i32 {
+    type Res = Self;
+    fn foo(&self) -> Self::Res { 1 }
+}
+fn main() {
+    let a: i32 = 1;
+    let c: Bar = _$0;
+}"#,
+           r#"
+struct Bar {}
+trait Foo {
+    type Res;
+    fn foo(&self) -> Self::Res;
+}
+impl Foo for i32 {
+    type Res = Self;
+    fn foo(&self) -> Self::Res { 1 }
+}
+fn main() {
+    let a: i32 = 1;
+    let c: Bar = Bar {  };
+}"#,
         );
     }
 }
