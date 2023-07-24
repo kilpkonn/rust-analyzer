@@ -19,7 +19,7 @@ use crate::{
     to_chalk_trait_id, traits::FnTrait, AliasEq, AliasTy, BoundVar, Canonical, Const, ConstValue,
     DebruijnIndex, GenericArg, GenericArgData, Goal, Guidance, InEnvironment, InferenceVar,
     Interner, Lifetime, ParamKind, ProjectionTy, ProjectionTyExt, Scalar, Solution, Substitution,
-    TraitEnvironment, Ty, TyBuilder, TyExt, TyKind, VariableKind,
+    TraitEnvironment, Ty, TyBuilder, TyExt, TyKind, VariableKind, infer::normalize,
 };
 
 impl InferenceContext<'_> {
@@ -105,7 +105,20 @@ pub(crate) fn unify(
     );
     let ty1_with_vars = vars.apply(tys.value.0.clone(), Interner);
     let ty2_with_vars = vars.apply(tys.value.1.clone(), Interner);
+
+    dbg!(&ty1_with_vars, &ty2_with_vars, "-------------------");
+    // let ty1_with_vars = normalize(db, env.clone(), vars.apply(tys.value.0.clone(), Interner));
+    // let ty2_with_vars = normalize(db, env, vars.apply(tys.value.1.clone(), Interner));
+    // let ty1_with_vars = table.normalize_associated_types_in(ty1_with_vars);
+    // let ty2_with_vars = table.normalize_associated_types_in(ty2_with_vars);
+    // table.resolve_obligations_as_possible();
+    // table.propagate_diverging_flag();
+    // let ty1_with_vars = table.resolve_completely(ty1_with_vars);
+    // let ty2_with_vars = table.resolve_completely(ty2_with_vars);
+
     dbg!(&ty1_with_vars, &ty2_with_vars);
+    dbg!(table.unify(&ty1_with_vars, &ty2_with_vars));
+    dbg!(&table.pending_obligations);
     if !table.unify(&ty1_with_vars, &ty2_with_vars) {
         return None;
     }
@@ -432,8 +445,11 @@ impl<'a> InferenceTable<'a> {
             Ok(r) => r,
             Err(_) => return false,
         };
-        self.register_infer_ok(result);
-        true
+        dbg!(ty1, ty2, &result);
+        result.goals.iter().all(|goal| {
+            let canonicalized = self.canonicalize(goal.clone());
+            self.try_fulfill_obligation(&canonicalized)
+        })
     }
 
     /// Unify two relatable values (e.g. `Ty`) and return new trait goals arising from it, so the
@@ -658,6 +674,41 @@ impl<'a> InferenceTable<'a> {
             None => {
                 // FIXME obligation cannot be fulfilled => diagnostic
                 true
+            }
+        }
+    }
+
+    fn try_fulfill_obligation(
+        &mut self,
+        canonicalized: &Canonicalized<InEnvironment<Goal>>,
+    ) -> bool {
+        let solution = self.db.trait_solve(
+            self.trait_env.krate,
+            self.trait_env.block,
+            canonicalized.value.clone(),
+        );
+
+        // TODO: Does just returning `solution.is_some()` work?
+        match solution {
+            Some(Solution::Unique(canonical_subst)) => {
+                canonicalized.apply_solution(
+                    self,
+                    Canonical {
+                        binders: canonical_subst.binders,
+                        // FIXME: handle constraints
+                        value: canonical_subst.value.subst,
+                    },
+                );
+                true
+            }
+            Some(Solution::Ambig(Guidance::Definite(substs))) => {
+                canonicalized.apply_solution(self, substs);
+                true
+            }
+            Some(_) => true,
+            None => {
+                dbg!("No solution");
+                false
             }
         }
     }

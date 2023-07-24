@@ -736,7 +736,7 @@ impl Foo for i32 {
 }
 fn main() {
     let a: i32 = 1;
-    let c: Bar = Bar {  };
+    let c: Bar = Bar { };
 }"#,
         );
     }
