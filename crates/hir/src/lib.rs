@@ -1855,7 +1855,7 @@ impl Function {
         let resolver = self.id.resolver(db.upcast());
         let substs = TyBuilder::placeholder_subst(db, self.id);
         let callable_sig = db.callable_item_signature(self.id.into()).substitute(Interner, &substs);
-        dbg!(&callable_sig);
+        dbg!("AAAAAAA", &substs);
         let ty = callable_sig.ret().clone();
         Type::new_with_resolver_inner(db, &resolver, ty)
     }

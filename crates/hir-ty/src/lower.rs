@@ -1484,6 +1484,7 @@ pub(crate) fn trait_environment_query(
         .with_type_param_mode(ParamLoweringMode::Placeholder);
     let mut traits_in_scope = Vec::new();
     let mut clauses = Vec::new();
+    dbg!(&resolver);
     for pred in resolver.where_predicates_in_scope() {
         for pred in ctx.lower_where_predicate(pred, false) {
             if let WhereClause::Implemented(tr) = &pred.skip_binders() {

@@ -102,6 +102,7 @@ pub(crate) fn trait_solve_query(
     {
         if let TyKind::BoundVar(_) = projection_ty.self_type_parameter(db).kind(Interner) {
             // Hack: don't ask Chalk to normalize with an unknown self type, it'll say that's impossible
+            dbg!(&projection_ty);
             return Some(Solution::Ambig(Guidance::Unknown));
         }
     }
@@ -154,6 +155,7 @@ fn solve(
             solver.solve_limited(&context, goal, &should_continue)
         };
 
+        dbg!(&goal, &solution);
         tracing::debug!("solve({:?}) => {:?}", goal, solution);
 
         solution

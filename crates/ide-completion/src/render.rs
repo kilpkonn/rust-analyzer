@@ -1705,7 +1705,7 @@ mod ops {
         fn not(self) -> Self::Output;
     }
 
-    impl Not for bool {
+    impl<T> Not for T where T: bool {
         type Output = bool;
         fn not(self) -> bool { if self { false } else { true }}
     }
@@ -1718,7 +1718,7 @@ fn main() {
             &[CompletionItemKind::Snippet, CompletionItemKind::Method],
             expect![[r#"
                 sn not [snippet]
-                me not() (use ops::Not) [type_could_unify+requires_import]
+                me not() (use ops::Not) [type_could_unif+requires_import]
                 sn if []
                 sn while []
                 sn ref []

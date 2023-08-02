@@ -4,7 +4,7 @@ use std::{fmt, iter, mem};
 
 use chalk_ir::{
     cast::Cast, fold::TypeFoldable, interner::HasInterner, zip::Zip, CanonicalVarKind, FloatTy,
-    IntTy, TyVariableKind, UniverseIndex,
+    IntTy, TyKind, TyVariableKind, UniverseIndex,
 };
 use chalk_solve::infer::ParameterEnaVariableExt;
 use either::Either;
@@ -19,7 +19,7 @@ use crate::{
     to_chalk_trait_id, traits::FnTrait, AliasEq, AliasTy, BoundVar, Canonical, Const, ConstValue,
     DebruijnIndex, GenericArg, GenericArgData, Goal, Guidance, InEnvironment, InferenceVar,
     Interner, Lifetime, ParamKind, ProjectionTy, ProjectionTyExt, Scalar, Solution, Substitution,
-    TraitEnvironment, Ty, TyBuilder, TyExt, TyKind, VariableKind, infer::normalize,
+    TraitEnvironment, Ty, TyBuilder, TyExt, VariableKind,
 };
 
 impl InferenceContext<'_> {
@@ -88,7 +88,7 @@ pub(crate) fn unify(
     env: Arc<TraitEnvironment>,
     tys: &Canonical<(Ty, Ty)>,
 ) -> Option<Substitution> {
-    let mut table = InferenceTable::new(db, env);
+    let mut table = InferenceTable::new(db, env.clone());
     let vars = Substitution::from_iter(
         Interner,
         tys.binders.iter(Interner).map(|it| match &it.kind {
@@ -106,19 +106,35 @@ pub(crate) fn unify(
     let ty1_with_vars = vars.apply(tys.value.0.clone(), Interner);
     let ty2_with_vars = vars.apply(tys.value.1.clone(), Interner);
 
-    dbg!(&ty1_with_vars, &ty2_with_vars, "-------------------");
+    dbg!(&ty1_with_vars, &ty2_with_vars, &env, "-------------------");
+    // use crate::infer::normalize;
     // let ty1_with_vars = normalize(db, env.clone(), vars.apply(tys.value.0.clone(), Interner));
-    // let ty2_with_vars = normalize(db, env, vars.apply(tys.value.1.clone(), Interner));
+    // let ty2_with_vars = normalize(db, env.clone(), vars.apply(tys.value.1.clone(), Interner));
     // let ty1_with_vars = table.normalize_associated_types_in(ty1_with_vars);
     // let ty2_with_vars = table.normalize_associated_types_in(ty2_with_vars);
+    // dbg!(&table);
     // table.resolve_obligations_as_possible();
+    // dbg!(&table);
     // table.propagate_diverging_flag();
+    // dbg!(&table);
     // let ty1_with_vars = table.resolve_completely(ty1_with_vars);
     // let ty2_with_vars = table.resolve_completely(ty2_with_vars);
+    dbg!(&table);
+
+    // if let TyKind::Alias(chalk_ir::AliasTy::Projection(p)) = ty1_with_vars.kind(Interner) {
+    //     dbg!(db.normalize_projection(p.clone(), env.clone()));
+    // }
+    // if let TyKind::Alias(chalk_ir::AliasTy::Projection(p)) = ty2_with_vars.kind(Interner) {
+    //     dbg!(db.normalize_projection(p.clone(), env));
+    // }
 
     dbg!(&ty1_with_vars, &ty2_with_vars);
     dbg!(table.unify(&ty1_with_vars, &ty2_with_vars));
     dbg!(&table.pending_obligations);
+    // if let TyKind::AssociatedType(ty, sub) = ty2_with_vars.kind(Interner) {
+    //     //TODO: db.normalize_projection_ty()..., maybe better
+    //     dbg!(&db.associated_ty_data(*ty));
+    // }
     if !table.unify(&ty1_with_vars, &ty2_with_vars) {
         return None;
     }
