@@ -1,7 +1,7 @@
 use hir::{
     db::{ExpandDatabase, HirDatabase},
-    Adt, ClosureStyle, Const, Function, HirDisplay, Local, Module, ModuleDef, ScopeDef,
-    SemanticsScope, Static, Struct, StructKind, Type, Variant,
+    Adt, AssocItem, ClosureStyle, Const, Function, HirDisplay, Impl, Local, Module, ModuleDef,
+    ScopeDef, SemanticsScope, Static, Struct, StructKind, Type, Variant,
 };
 use ide_db::{
     assists::{Assist, AssistId, AssistKind, GroupLabel},
@@ -97,8 +97,6 @@ fn fixes(ctx: &DiagnosticsContext<'_>, d: &hir::TypedHole) -> Option<Vec<Assist>
         process_def(def, &mut funcs, &mut vars, db);
     });
 
-    dbg!(names);
-
     let path = dfs_term_search(&d.expected, &vars, &funcs, db, 3, &scope)?;
     let code = path.gen_source_code(&items_in_scope, ctx);
 
@@ -113,8 +111,6 @@ fn fixes(ctx: &DiagnosticsContext<'_>, d: &hir::TypedHole) -> Option<Vec<Assist>
         )),
         trigger_signature_help: false,
     });
-
-    dbg!(&assists);
 
     Some(assists)
 }
@@ -156,13 +152,14 @@ impl TypeInhabitant {
             Self::Static(it) => it.ty(db),
             Self::Local(it) => it.ty(db),
         };
-        self_ty.could_unify_with(db, ty)
+        self_ty.could_unify_with_normalized(db, ty)
     }
 }
 
 #[derive(Debug, Clone, Eq, Hash, PartialEq)]
 enum TypeTransformation {
     Function(Function),
+    ImplFunction(Function, Impl),
     Variant(Variant),
     Struct(Struct),
 }
@@ -190,15 +187,19 @@ fn gen_module_prefix(
 impl TypeTransformation {
     fn could_unify_with(&self, db: &dyn HirDatabase, ty: &Type) -> bool {
         match self {
-            Self::Function(it) => it.ret_type(db).could_unify_with(db, ty),
-            Self::Variant(it) => it.parent_enum(db).ty(db).could_unify_with(db, ty),
-            Self::Struct(it) => it.ty(db).could_unify_with(db, ty),
+            Self::Function(it) => it.ret_type(db).could_unify_with_normalized(db, ty),
+            Self::ImplFunction(it, imp) => {
+                it.ret_type_for_impl(&imp, db).could_unify_with_normalized(db, ty)
+            }
+            Self::Variant(it) => it.parent_enum(db).ty(db).could_unify_with_normalized(db, ty),
+            Self::Struct(it) => it.ty(db).could_unify_with_normalized(db, ty),
         }
     }
 
     fn ret_ty(&self, db: &dyn HirDatabase) -> Type {
         match self {
             Self::Function(it) => it.ret_type(db),
+            Self::ImplFunction(it, imp) => it.ret_type_for_impl(&imp, db),
             Self::Variant(it) => it.parent_enum(db).ty(db),
             Self::Struct(it) => it.ty(db),
         }
@@ -212,21 +213,19 @@ impl TypeTransformation {
         let db = ctx.sema.db;
         match self {
             Self::Function(it) => {
-                if it.has_self_param(db) {
-                    let target =
-                        params.first().expect("asdasd").gen_source_code(items_in_scope, ctx);
-                    let args = params
-                        .iter()
-                        .skip(1)
-                        .map(|f| f.gen_source_code(items_in_scope, ctx))
-                        .join(", ");
-                    format!("{}.{}({})", target, it.name(db).display(db).to_string(), args)
-                } else {
-                    let args =
-                        params.iter().map(|f| f.gen_source_code(items_in_scope, ctx)).join(", ");
-                    let sig = format!("{}({})", it.name(db).display(db).to_string(), args);
-                    format!("{}{}", gen_module_prefix(it.module(db), items_in_scope, db), sig)
-                }
+                let args = params.iter().map(|f| f.gen_source_code(items_in_scope, ctx)).join(", ");
+                let sig = format!("{}({})", it.name(db).display(db).to_string(), args);
+                format!("{}{}", gen_module_prefix(it.module(db), items_in_scope, db), sig)
+            }
+            Self::ImplFunction(it, _imp) => {
+                let target =
+                    params.first().expect("no self param").gen_source_code(items_in_scope, ctx);
+                let args = params
+                    .iter()
+                    .skip(1)
+                    .map(|f| f.gen_source_code(items_in_scope, ctx))
+                    .join(", ");
+                format!("{}.{}({})", target, it.name(db).display(db).to_string(), args)
             }
             Self::Variant(variant) => {
                 let inner = match variant.kind(db) {
@@ -310,7 +309,7 @@ impl TypeTree {
     fn find_typetree_for_type(&self, ty: &Type, db: &dyn HirDatabase) -> Option<&TypeTree> {
         match self {
             TypeTree::TypeInhabitant(it) => {
-                if it.ty(db).could_unify_with(db, ty) {
+                if it.ty(db).could_unify_with_normalized(db, ty) {
                     Some(self)
                 } else {
                     None
@@ -320,7 +319,7 @@ impl TypeTree {
                 if func.could_unify_with(db, ty) {
                     Some(self)
                 } else {
-                    params.iter().find(|it| it.ty(db).could_unify_with(db, ty))
+                    params.iter().find(|it| it.ty(db).could_unify_with_normalized(db, ty))
                 }
             }
         }
@@ -334,7 +333,7 @@ impl TypeTree {
     }
 
     fn could_unify_with(&self, db: &dyn HirDatabase, ty: &Type) -> bool {
-        self.ty(db).could_unify_with(db, ty)
+        self.ty(db).could_unify_with_normalized(db, ty)
     }
 }
 
@@ -351,28 +350,39 @@ fn dfs_search_assoc_item(
     }
 
     let mut res = Vec::new();
+    Impl::all_for_type(db, tt.ty(db)).into_iter().for_each(|imp| {
+        imp.items(db).into_iter().for_each(|it| {
+            let func = match it {
+                AssocItem::Function(f) => f,
+                _ => return,
+            };
+            let mut params: Vec<TypeTree> = match func.params_without_self(db).into_iter().fold(
+                Some(Vec::new()),
+                |acc, param| {
+                    acc.and_then(|mut params| {
+                        dfs_term_search(param.ty(), vars, funcs, db, depth.saturating_sub(1), scope)
+                            .and_then(|param| {
+                                params.push(param);
+                                Some(params)
+                            })
+                    })
+                },
+            ) {
+                Some(p) => p,
+                None => return,
+            };
 
-    tt.ty(db).iterate_method_candidates(db, scope, None, None, |func| {
-        let mut params: Vec<TypeTree> =
-            func.params_without_self(db).into_iter().fold(Some(Vec::new()), |acc, param| {
-                acc.and_then(|mut params| {
-                    dfs_term_search(param.ty(), vars, funcs, db, depth.saturating_sub(1), scope)
-                        .and_then(|param| {
-                            params.push(param);
-                            Some(params)
-                        })
-                })
-            })?;
-        params.insert(0, tt.clone());
-        let new_tt =
-            TypeTree::TypeTransformation { func: TypeTransformation::Function(func), params };
-        res.push(new_tt.clone());
+            params.insert(0, tt.clone());
+            let new_tt = TypeTree::TypeTransformation {
+                func: TypeTransformation::ImplFunction(func, imp),
+                params,
+            };
+            res.push(new_tt.clone());
 
-        let rec_res =
-            dfs_search_assoc_item(&new_tt, vars, funcs, db, depth.saturating_sub(1), scope);
-        res.extend(rec_res);
-
-        None::<()>
+            let rec_res =
+                dfs_search_assoc_item(&new_tt, vars, funcs, db, depth.saturating_sub(1), scope);
+            res.extend(rec_res);
+        });
     });
 
     res
@@ -411,15 +421,8 @@ fn dfs_term_search(
             )
         })
         .collect();
-    dbg!(&forward_pass_types);
 
     if let Some(tt) = forward_pass_types.iter().find(|it| it.could_unify_with(db, goal)) {
-        let ret_ty = tt.ty(db);
-        dbg!(&ret_ty);
-        dbg!(ret_ty.could_unify_with(db, goal));
-        // let g = ret_ty.contains_unknown();
-        // let h = ret_ty.generic_params(db).into_iter().last().unwrap();
-        // let h2 = format!("{:?}", &h);
         return Some(tt.clone());
     }
 
@@ -447,6 +450,7 @@ fn dfs_term_search(
                 let node = TypeTree::TypeTransformation { func: tt.clone(), params };
                 Some(node)
             }
+            TypeTransformation::ImplFunction(_, _) => None,
             TypeTransformation::Variant(variant) => {
                 let fields: Vec<TypeTree> =
                     variant.fields(db).into_iter().fold(Some(Vec::new()), |acc, field| {
@@ -698,7 +702,7 @@ fn main() {
     let a: i32 = 1;
     let c: Qwe = _$0;
 }"#,
-           r#"struct Abc {}
+            r#"struct Abc {}
 struct Qwe { a: i32, b: Abc }
 fn main() {
     let a: i32 = 1;
@@ -708,8 +712,8 @@ fn main() {
     }
 
     #[test]
-    fn tmp() {
-       check_has_fix(
+    fn ignore_impl_func_with_incorrect_return() {
+        check_has_fix(
             r#"
 struct Bar {}
 trait Foo {
@@ -724,7 +728,7 @@ fn main() {
     let a: i32 = 1;
     let c: Bar = _$0;
 }"#,
-           r#"
+            r#"
 struct Bar {}
 trait Foo {
     type Res;
@@ -737,6 +741,40 @@ impl Foo for i32 {
 fn main() {
     let a: i32 = 1;
     let c: Bar = Bar {  };
+}"#,
+        );
+    }
+
+    #[test]
+    fn use_impl_func_with_correct_return() {
+        check_has_fix(
+            r#"
+struct Bar {}
+trait Foo {
+    type Res;
+    fn foo(&self) -> Self::Res;
+}
+impl Foo for i32 {
+    type Res = Bar;
+    fn foo(&self) -> Self::Res { Bar { } }
+}
+fn main() {
+    let a: i32 = 1;
+    let c: Bar = _$0;
+}"#,
+            r#"
+struct Bar {}
+trait Foo {
+    type Res;
+    fn foo(&self) -> Self::Res;
+}
+impl Foo for i32 {
+    type Res = Bar;
+    fn foo(&self) -> Self::Res { Bar { } }
+}
+fn main() {
+    let a: i32 = 1;
+    let c: Bar = a.foo();
 }"#,
         );
     }

@@ -1855,7 +1855,15 @@ impl Function {
         let resolver = self.id.resolver(db.upcast());
         let substs = TyBuilder::placeholder_subst(db, self.id);
         let callable_sig = db.callable_item_signature(self.id.into()).substitute(Interner, &substs);
-        dbg!(&callable_sig);
+        let ty = callable_sig.ret().clone();
+        Type::new_with_resolver_inner(db, &resolver, ty)
+    }
+
+    /// Get this function's return type
+    pub fn ret_type_for_impl(self, imp: &Impl, db: &dyn HirDatabase) -> Type {
+        let resolver = self.id.resolver(db.upcast());
+        let substs = TyBuilder::bound_vars_subst(db, self.id);
+        let callable_sig = db.callable_item_signature(self.id.into()).substitute(Interner, &substs);
         let ty = callable_sig.ret().clone();
         Type::new_with_resolver_inner(db, &resolver, ty)
     }
@@ -3255,13 +3263,8 @@ impl Impl {
                     .filter(filter),
             )
         });
-        for id in def_crates
-            .iter()
-            .flat_map(|&id| Crate { id }.transitive_reverse_dependencies(db))
-            .map(|Crate { id }| id)
-            .chain(def_crates.iter().copied())
-            .unique()
-        {
+
+        for Crate { id } in Crate::all(db) {
             all.extend(
                 db.trait_impls_in_crate(id)
                     .for_self_ty_without_blanket_impls(fp)
@@ -4304,6 +4307,11 @@ impl Type {
     pub fn could_unify_with(&self, db: &dyn HirDatabase, other: &Type) -> bool {
         let tys = hir_ty::replace_errors_with_variables(&(self.ty.clone(), other.ty.clone()));
         hir_ty::could_unify(db, self.env.clone(), &tys)
+    }
+
+    pub fn could_unify_with_normalized(&self, db: &dyn HirDatabase, other: &Type) -> bool {
+        let tys = hir_ty::replace_errors_with_variables(&(self.ty.clone(), other.ty.clone()));
+        hir_ty::could_unify_normalized(db, self.env.clone(), &tys)
     }
 
     pub fn could_coerce_to(&self, db: &dyn HirDatabase, to: &Type) -> bool {

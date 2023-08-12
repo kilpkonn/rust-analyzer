@@ -58,7 +58,7 @@ use crate::{
 #[allow(unreachable_pub)]
 pub use coerce::could_coerce;
 #[allow(unreachable_pub)]
-pub use unify::could_unify;
+pub use unify::{could_unify, could_unify_normalized};
 
 pub(crate) use self::closure::{CaptureKind, CapturedItem, CapturedItemWithoutTy};
 

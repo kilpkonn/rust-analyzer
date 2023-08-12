@@ -194,6 +194,11 @@ impl TyBuilder<()> {
         params.placeholder_subst(db)
     }
 
+    pub fn bound_vars_subst(db: &dyn HirDatabase, def: impl Into<GenericDefId>) -> Substitution {
+        let params = generics(db.upcast(), def.into());
+        params.bound_vars_subst(db, DebruijnIndex::INNERMOST)
+    }
+
     pub fn unknown_subst(db: &dyn HirDatabase, def: impl Into<GenericDefId>) -> Substitution {
         let params = generics(db.upcast(), def.into());
         Substitution::from_iter(
