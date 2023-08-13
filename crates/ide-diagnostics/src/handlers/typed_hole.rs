@@ -13,7 +13,7 @@ use text_edit::TextEdit;
 
 use crate::{Diagnostic, DiagnosticCode, DiagnosticsContext};
 
-use std::iter::Extend;
+use std::iter::{self, Extend};
 
 use itertools::Itertools;
 
@@ -46,7 +46,6 @@ fn fixes(ctx: &DiagnosticsContext<'_>, d: &hir::TypedHole) -> Option<Vec<Assist>
     let original_range =
         d.expr.as_ref().map(|it| it.to_node(&root)).syntax().original_file_range_opt(db)?;
     let scope = ctx.sema.scope(d.expr.value.to_node(&root).syntax())?;
-    let mut assists = vec![];
 
     let mut funcs = Vec::default();
     let mut vars = Vec::default();
@@ -80,7 +79,7 @@ fn fixes(ctx: &DiagnosticsContext<'_>, d: &hir::TypedHole) -> Option<Vec<Assist>
             ScopeDef::ModuleDef(ModuleDef::Adt(Adt::Struct(it))) => {
                 funcs.push(TypeTransformation::Struct(it));
             }
-            ScopeDef::ModuleDef(ModuleDef::Module(it)) => {
+            ScopeDef::ModuleDef(ModuleDef::Module(_it)) => {
                 // it.declarations(db)
                 //     .into_iter()
                 //     .for_each(|def| process_def(ScopeDef::ModuleDef(def), funcs, vars, db));
@@ -97,22 +96,30 @@ fn fixes(ctx: &DiagnosticsContext<'_>, d: &hir::TypedHole) -> Option<Vec<Assist>
         process_def(def, &mut funcs, &mut vars, db);
     });
 
-    let path = dfs_term_search(&d.expected, &vars, &funcs, db, 3, &scope)?;
-    let code = path.gen_source_code(&items_in_scope, ctx);
+    let paths = dfs_term_search(&d.expected, &vars, &funcs, db, 3, &scope);
 
-    assists.push(Assist {
-        id: AssistId("typed-hole", AssistKind::QuickFix),
-        label: Label::new(format!("Replace `_` with `{}`", &code)),
-        group: Some(GroupLabel("Replace `_` with a term".to_owned())),
-        target: original_range.range,
-        source_change: Some(SourceChange::from_text_edit(
-            original_range.file_id,
-            TextEdit::replace(original_range.range, code),
-        )),
-        trigger_signature_help: false,
-    });
+    let mut assists = vec![];
+    for (_d, path) in paths {
+        let code = path.gen_source_code(&items_in_scope, ctx);
 
-    Some(assists)
+        assists.push(Assist {
+            id: AssistId("typed-hole", AssistKind::QuickFix),
+            label: Label::new(format!("Replace `_` with `{}`", &code)),
+            group: Some(GroupLabel("Replace `_` with a term".to_owned())),
+            target: original_range.range,
+            source_change: Some(SourceChange::from_text_edit(
+                original_range.file_id,
+                TextEdit::replace(original_range.range, code),
+            )),
+            trigger_signature_help: false,
+        });
+    }
+    dbg!(&assists);
+    if !assists.is_empty() {
+        Some(assists)
+    } else {
+        None
+    }
 }
 
 #[derive(Debug, Clone, Eq, Hash, PartialEq)]
@@ -344,48 +351,72 @@ fn dfs_search_assoc_item(
     db: &dyn HirDatabase,
     depth: u32,
     scope: &SemanticsScope<'_>,
-) -> Vec<TypeTree> {
+) -> Vec<(u32, TypeTree)> {
     if depth == 0 {
         return Vec::new();
     }
 
-    let mut res = Vec::new();
-    Impl::all_for_type(db, tt.ty(db)).into_iter().for_each(|imp| {
-        imp.items(db).into_iter().for_each(|it| {
-            let func = match it {
-                AssocItem::Function(f) => f,
-                _ => return,
-            };
-            let mut params: Vec<TypeTree> = match func.params_without_self(db).into_iter().fold(
-                Some(Vec::new()),
-                |acc, param| {
-                    acc.and_then(|mut params| {
-                        dfs_term_search(param.ty(), vars, funcs, db, depth.saturating_sub(1), scope)
-                            .and_then(|param| {
-                                params.push(param);
-                                Some(params)
-                            })
-                    })
-                },
-            ) {
-                Some(p) => p,
-                None => return,
-            };
+    Impl::all_for_type(db, tt.ty(db))
+        .into_iter()
+        .flat_map(|imp| {
+            imp.items(db)
+                .into_iter()
+                .filter_map(|it| match it {
+                    AssocItem::Function(f) => Some(f),
+                    _ => None,
+                })
+                .flat_map(move |func| {
+                    let param_trees: Vec<Vec<(u32, TypeTree)>> =
+                        iter::once(vec![(depth, tt.clone())])
+                            .chain(func.params_without_self(db).into_iter().map(|param| {
+                                let tts = dfs_term_search(
+                                    param.ty(),
+                                    vars,
+                                    funcs,
+                                    db,
+                                    depth.saturating_sub(1),
+                                    scope,
+                                );
+                                let max = tts.iter().map(|(d, _)| *d).max().unwrap_or(0);
+                                tts.into_iter().filter(|(d, _)| *d >= max).collect()
+                            }))
+                            .collect();
 
-            params.insert(0, tt.clone());
-            let new_tt = TypeTree::TypeTransformation {
-                func: TypeTransformation::ImplFunction(func, imp),
-                params,
-            };
-            res.push(new_tt.clone());
+                    let mut new_tts: Vec<(u32, TypeTree)> = param_trees
+                        .into_iter()
+                        .multi_cartesian_product()
+                        .map(|params| {
+                            (
+                                params.iter().map(|(d, _)| *d).min().unwrap_or(0),
+                                TypeTree::TypeTransformation {
+                                    func: TypeTransformation::ImplFunction(func, imp),
+                                    params: params.into_iter().map(|(_, p)| p).collect(),
+                                },
+                            )
+                        })
+                        .collect();
 
-            let rec_res =
-                dfs_search_assoc_item(&new_tt, vars, funcs, db, depth.saturating_sub(1), scope);
-            res.extend(rec_res);
-        });
-    });
+                    let rec_res: Vec<(u32, TypeTree)> = new_tts
+                        .iter()
+                        .flat_map(|(d, new_tt)| {
+                            dfs_search_assoc_item(
+                                &new_tt,
+                                vars,
+                                funcs,
+                                db,
+                                d.saturating_sub(1),
+                                scope,
+                            )
+                            .into_iter()
+                        })
+                        .collect();
 
-    res
+                    new_tts.extend(rec_res);
+                    Some(new_tts)
+                })
+        })
+        .flatten()
+        .collect()
 }
 
 fn dfs_term_search(
@@ -395,16 +426,21 @@ fn dfs_term_search(
     db: &dyn HirDatabase,
     depth: u32,
     scope: &SemanticsScope<'_>,
-) -> Option<TypeTree> {
+) -> Vec<(u32, TypeTree)> {
     if depth == 0 {
-        return None;
+        return Vec::new();
     }
 
-    if let Some(ty) = vars.iter().find(|&ty| ty.could_unify_with(db, goal)) {
-        return Some(TypeTree::TypeInhabitant(ty.clone()));
-    };
+    let fulfilling_vars: Vec<&TypeInhabitant> =
+        vars.iter().filter(|&ty| ty.could_unify_with(db, goal)).collect();
+    if !fulfilling_vars.is_empty() {
+        return fulfilling_vars
+            .into_iter()
+            .map(|it| (depth, TypeTree::TypeInhabitant(it.clone())))
+            .collect();
+    }
 
-    let forward_pass_types: Vec<TypeTree> = vars
+    let mut forward_pass_types: Vec<(u32, TypeTree)> = vars
         .iter()
         .filter(|it| match it {
             TypeInhabitant::Local(_) => true,
@@ -422,85 +458,67 @@ fn dfs_term_search(
         })
         .collect();
 
-    if let Some(tt) = forward_pass_types.iter().find(|it| it.could_unify_with(db, goal)) {
-        return Some(tt.clone());
-    }
+    dbg!(&forward_pass_types);
 
-    let func =
-        funcs.iter().filter(|func| func.could_unify_with(db, goal)).find_map(|tt| match tt {
+    let backward_pass: Vec<(u32, TypeTree)> = funcs
+        .iter()
+        .filter(|func| func.could_unify_with(db, goal))
+        .filter_map(|tt| match tt {
             TypeTransformation::Function(func) => {
-                let params: Vec<TypeTree> =
-                    func.assoc_fn_params(db).into_iter().fold(Some(Vec::new()), |acc, param| {
-                        acc.and_then(|mut params| {
-                            dfs_term_search(
-                                param.ty(),
-                                vars,
-                                funcs,
-                                db,
-                                depth.saturating_sub(1),
-                                scope,
-                            )
-                            .and_then(|param| {
-                                params.push(param);
-                                Some(params)
-                            })
-                        })
-                    })?;
-
-                let node = TypeTree::TypeTransformation { func: tt.clone(), params };
-                Some(node)
+                let mut param_trees = func.assoc_fn_params(db).into_iter().map(|param| {
+                    dfs_term_search(param.ty(), vars, funcs, db, depth.saturating_sub(1), scope)
+                });
+                build_permutations(&mut param_trees, tt.clone())
             }
             TypeTransformation::ImplFunction(_, _) => None,
             TypeTransformation::Variant(variant) => {
-                let fields: Vec<TypeTree> =
-                    variant.fields(db).into_iter().fold(Some(Vec::new()), |acc, field| {
-                        acc.and_then(|mut fields| {
-                            dfs_term_search(
-                                &field.ty(db),
-                                vars,
-                                funcs,
-                                db,
-                                depth.saturating_sub(1),
-                                scope,
-                            )
-                            .and_then(|field| {
-                                fields.push(field);
-                                Some(fields)
-                            })
-                        })
-                    })?;
-                let node = TypeTree::TypeTransformation { func: tt.clone(), params: fields };
-                Some(node)
+                let mut param_trees = variant.fields(db).into_iter().map(|field| {
+                    dfs_term_search(&field.ty(db), vars, funcs, db, depth.saturating_sub(1), scope)
+                });
+                build_permutations(&mut param_trees, tt.clone())
             }
             TypeTransformation::Struct(strukt) => {
-                let fields: Vec<TypeTree> =
-                    strukt.fields(db).into_iter().fold(Some(Vec::new()), |acc, field| {
-                        acc.and_then(|mut fields| {
-                            dfs_term_search(
-                                &field.ty(db),
-                                vars,
-                                funcs,
-                                db,
-                                depth.saturating_sub(1),
-                                scope,
-                            )
-                            .and_then(|field| {
-                                fields.push(field);
-                                Some(fields)
-                            })
-                        })
-                    })?;
-
-                let node = TypeTree::TypeTransformation { func: tt.clone(), params: fields };
-                Some(node)
+                let mut param_trees = strukt.fields(db).into_iter().map(|field| {
+                    dfs_term_search(&field.ty(db), vars, funcs, db, depth.saturating_sub(1), scope)
+                });
+                build_permutations(&mut param_trees, tt.clone())
             }
-        });
+        })
+        .flatten()
+        .collect();
+    dbg!(&backward_pass);
 
-    if func.is_some() {
-        return func;
+    forward_pass_types.extend(backward_pass);
+
+    forward_pass_types
+}
+
+fn build_permutations<'a>(
+    param_trees: &'a mut dyn Iterator<Item = Vec<(u32, TypeTree)>>,
+    tt: TypeTransformation,
+) -> Option<Vec<(u32, TypeTree)>> {
+    // Extra case for transformations with 0 params
+    let (param_trees, count_tree) = param_trees.tee();
+    if count_tree.count() == 0 {
+        return Some(vec![(
+            0,
+            TypeTree::TypeTransformation { func: tt.clone(), params: Vec::new() },
+        )]);
     }
+    let res: Vec<_> = param_trees
+        .multi_cartesian_product()
+        .map(move |params| {
+            (
+                params.iter().map(|(d, _)| *d).min().unwrap_or(0),
+                TypeTree::TypeTransformation {
+                    func: tt.clone(),
+                    params: params.into_iter().map(|(_, p)| p).collect(),
+                },
+            )
+        })
+        .collect();
 
-    None
+    Some(res)
 }
 
 #[cfg(test)]
@@ -605,18 +623,18 @@ fn main<const CP: Foo>(param: Foo) {
                //^ error: invalid `_` expression, expected type `fn()`
 }
 "#,
-                //                 r#"
-                // enum Foo {
-                //     Bar
-                // }
-                // use Foo::Bar;
-                // const C: Foo = Foo::Bar;
-                // fn main<const CP: Foo>(param: Foo) {
-                //     let local = Foo::Bar;
-                //     let _: Foo = param;
-                //                //^ error: invalid `_` expression, expected type `fn()`
-                // }
-                // "#,
+                r#"
+enum Foo {
+    Bar
+}
+use Foo::Bar;
+const C: Foo = Foo::Bar;
+fn main<const CP: Foo>(param: Foo) {
+    let local = Foo::Bar;
+    let _: Foo = param;
+               //^ error: invalid `_` expression, expected type `fn()`
+}
+"#,
                 //                 r#"
                 // enum Foo {
                 //     Bar
@@ -641,18 +659,18 @@ fn main<const CP: Foo>(param: Foo) {
                 //                //^ error: invalid `_` expression, expected type `fn()`
                 // }
                 // "#,
-                //                 r#"
-                // enum Foo {
-                //     Bar
-                // }
-                // use Foo::Bar;
-                // const C: Foo = Foo::Bar;
-                // fn main<const CP: Foo>(param: Foo) {
-                //     let local = Foo::Bar;
-                //     let _: Foo = C;
-                //                //^ error: invalid `_` expression, expected type `fn()`
-                // }
-                // "#,
+                r#"
+enum Foo {
+    Bar
+}
+use Foo::Bar;
+const C: Foo = Foo::Bar;
+fn main<const CP: Foo>(param: Foo) {
+    let local = Foo::Bar;
+    let _: Foo = C;
+               //^ error: invalid `_` expression, expected type `fn()`
+}
+"#,
             ],
         );
     }
