@@ -198,14 +198,7 @@ fn gen_module_prefix(
 
 impl TypeTransformation {
     fn could_unify_with(&self, db: &dyn HirDatabase, ty: &Type) -> bool {
-        match self {
-            Self::Function(it) => it.ret_type(db).could_unify_with_normalized(db, ty),
-            Self::ImplFunction(it, imp) => {
-                it.ret_type_for_impl(&imp, db).could_unify_with_normalized(db, ty)
-            }
-            Self::Variant(it) => it.parent_enum(db).ty(db).could_unify_with_normalized(db, ty),
-            Self::Struct(it) => it.ty(db).could_unify_with_normalized(db, ty),
-        }
+        self.ret_ty(db).could_unify_with_normalized(db, ty)
     }
 
     fn ret_ty(&self, db: &dyn HirDatabase) -> Type {
@@ -318,25 +311,6 @@ impl TypeTree {
         }
     }
 
-    fn find_typetree_for_type(&self, ty: &Type, db: &dyn HirDatabase) -> Option<&TypeTree> {
-        match self {
-            TypeTree::TypeInhabitant(it) => {
-                if it.ty(db).could_unify_with_normalized(db, ty) {
-                    Some(self)
-                } else {
-                    None
-                }
-            }
-            TypeTree::TypeTransformation { func, params } => {
-                if func.could_unify_with(db, ty) {
-                    Some(self)
-                } else {
-                    params.iter().find(|it| it.ty(db).could_unify_with_normalized(db, ty))
-                }
-            }
-        }
-    }
-
     fn ty(&self, db: &dyn HirDatabase) -> Type {
         match self {
             TypeTree::TypeInhabitant(it) => it.ty(db),
@@ -441,9 +415,6 @@ fn dfs_term_search(
         .filter(|&ty| ty.could_unify_with(db, goal))
         .map(|it| (depth, TypeTree::TypeInhabitant(it.clone())))
         .collect();
-    // if !fulfilling_vars.is_empty() {
-    //     return fulfilling_vars;
-    // }
 
     let forward_pass_types: Vec<(u32, TypeTree)> = vars
         .iter()
@@ -461,32 +432,33 @@ fn dfs_term_search(
                 scope,
             )
         })
+        .filter(|(_, tt)| tt.could_unify_with(db, goal))
         .collect();
 
     fulfilling_vars.extend(forward_pass_types);
 
     let backward_pass: Vec<(u32, TypeTree)> = funcs
         .iter()
-        .filter(|func| func.could_unify_with(db, goal))
-        .filter_map(|tt| match tt {
+        .filter(|tr| tr.could_unify_with(db, goal))
+        .filter_map(|tr| match tr {
             TypeTransformation::Function(func) => {
                 let mut param_trees = func.assoc_fn_params(db).into_iter().map(|param| {
                     dfs_term_search(param.ty(), vars, funcs, db, depth.saturating_sub(1), scope)
                 });
-                build_permutations(&mut param_trees, tt.clone())
+                build_permutations(&mut param_trees, tr.clone())
             }
             TypeTransformation::ImplFunction(_, _) => None,
             TypeTransformation::Variant(variant) => {
                 let mut param_trees = variant.fields(db).into_iter().map(|field| {
                     dfs_term_search(&field.ty(db), vars, funcs, db, depth.saturating_sub(1), scope)
                 });
-                build_permutations(&mut param_trees, tt.clone())
+                build_permutations(&mut param_trees, tr.clone())
             }
             TypeTransformation::Struct(strukt) => {
                 let mut param_trees = strukt.fields(db).into_iter().map(|field| {
                     dfs_term_search(&field.ty(db), vars, funcs, db, depth.saturating_sub(1), scope)
                 });
-                build_permutations(&mut param_trees, tt.clone())
+                build_permutations(&mut param_trees, tr.clone())
             }
         })
         .flatten()
