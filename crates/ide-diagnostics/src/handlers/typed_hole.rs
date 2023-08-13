@@ -1,7 +1,7 @@
 use hir::{
     db::{ExpandDatabase, HirDatabase},
-    Adt, AssocItem, ClosureStyle, Const, Function, HirDisplay, Impl, Local, Module, ModuleDef,
-    ScopeDef, SemanticsScope, Static, Struct, StructKind, Type, Variant,
+    Adt, AssocItem, ClosureStyle, Const, ConstParam, Function, GenericParam, HirDisplay, Impl,
+    Local, Module, ModuleDef, ScopeDef, SemanticsScope, Static, Struct, StructKind, Type, Variant,
 };
 use ide_db::{
     assists::{Assist, AssistId, AssistKind, GroupLabel},
@@ -84,6 +84,9 @@ fn fixes(ctx: &DiagnosticsContext<'_>, d: &hir::TypedHole) -> Option<Vec<Assist>
                 //     .into_iter()
                 //     .for_each(|def| process_def(ScopeDef::ModuleDef(def), funcs, vars, db));
             }
+            ScopeDef::GenericParam(GenericParam::ConstParam(it)) => {
+                vars.push(TypeInhabitant::ConstParam(it));
+            }
             ScopeDef::Local(it) => {
                 vars.push(TypeInhabitant::Local(it));
             }
@@ -96,7 +99,11 @@ fn fixes(ctx: &DiagnosticsContext<'_>, d: &hir::TypedHole) -> Option<Vec<Assist>
         process_def(def, &mut funcs, &mut vars, db);
     });
 
-    let paths = dfs_term_search(&d.expected, &vars, &funcs, db, 3, &scope);
+    vars = vars.into_iter().unique().collect();
+    funcs = funcs.into_iter().unique().collect();
+
+    dbg!(&names);
+    let paths = dfs_term_search(&d.expected, &vars, &funcs, db, 3, &scope).into_iter().unique();
 
     let mut assists = vec![];
     for (_d, path) in paths {
@@ -114,7 +121,7 @@ fn fixes(ctx: &DiagnosticsContext<'_>, d: &hir::TypedHole) -> Option<Vec<Assist>
             trigger_signature_help: false,
         });
     }
-    dbg!(&assists);
+    dbg!(&assists.iter().map(|a| a.label.to_string()).collect::<Vec<_>>());
     if !assists.is_empty() {
         Some(assists)
     } else {
@@ -127,6 +134,7 @@ enum TypeInhabitant {
     Const(Const),
     Static(Static),
     Local(Local),
+    ConstParam(ConstParam),
 }
 
 impl TypeInhabitant {
@@ -140,6 +148,7 @@ impl TypeInhabitant {
             TypeInhabitant::Const(it) => (it.name(db).expect("Sum Ting Wong!?!"), it.module(db)),
             TypeInhabitant::Static(it) => (it.name(db), it.module(db)),
             TypeInhabitant::Local(it) => (it.name(db), it.module(db)),
+            TypeInhabitant::ConstParam(it) => (it.name(db), it.module(db)),
         };
         let name = name.display(db).to_string();
         let prefix = gen_module_prefix(module, items_in_scope, db);
@@ -151,15 +160,11 @@ impl TypeInhabitant {
             TypeInhabitant::Const(it) => it.ty(db),
             TypeInhabitant::Static(it) => it.ty(db),
             TypeInhabitant::Local(it) => it.ty(db),
+            TypeInhabitant::ConstParam(it) => it.ty(db),
         }
     }
     fn could_unify_with(&self, db: &dyn HirDatabase, ty: &Type) -> bool {
-        let self_ty = match self {
-            Self::Const(it) => it.ty(db),
-            Self::Static(it) => it.ty(db),
-            Self::Local(it) => it.ty(db),
-        };
-        self_ty.could_unify_with_normalized(db, ty)
+        self.ty(db).could_unify_with_normalized(db, ty)
     }
 }
 
@@ -291,7 +296,7 @@ impl TypeTransformation {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, Hash, PartialEq)]
 enum TypeTree {
     /// Leaf node
     TypeInhabitant(TypeInhabitant),
@@ -431,16 +436,16 @@ fn dfs_term_search(
         return Vec::new();
     }
 
-    let fulfilling_vars: Vec<&TypeInhabitant> =
-        vars.iter().filter(|&ty| ty.could_unify_with(db, goal)).collect();
-    if !fulfilling_vars.is_empty() {
-        return fulfilling_vars
-            .into_iter()
-            .map(|it| (depth, TypeTree::TypeInhabitant(it.clone())))
-            .collect();
-    }
+    let mut fulfilling_vars: Vec<(u32, TypeTree)> = vars
+        .iter()
+        .filter(|&ty| ty.could_unify_with(db, goal))
+        .map(|it| (depth, TypeTree::TypeInhabitant(it.clone())))
+        .collect();
+    // if !fulfilling_vars.is_empty() {
+    //     return fulfilling_vars;
+    // }
 
-    let mut forward_pass_types: Vec<(u32, TypeTree)> = vars
+    let forward_pass_types: Vec<(u32, TypeTree)> = vars
         .iter()
         .filter(|it| match it {
             TypeInhabitant::Local(_) => true,
@@ -458,7 +463,7 @@ fn dfs_term_search(
         })
         .collect();
 
-    dbg!(&forward_pass_types);
+    fulfilling_vars.extend(forward_pass_types);
 
     let backward_pass: Vec<(u32, TypeTree)> = funcs
         .iter()
@@ -486,11 +491,9 @@ fn dfs_term_search(
         })
         .flatten()
         .collect();
-    dbg!(&backward_pass);
+    fulfilling_vars.extend(backward_pass);
 
-    forward_pass_types.extend(backward_pass);
-
-    forward_pass_types
+    fulfilling_vars
 }
 
 fn build_permutations<'a>(
@@ -635,30 +638,18 @@ fn main<const CP: Foo>(param: Foo) {
                //^ error: invalid `_` expression, expected type `fn()`
 }
 "#,
-                //                 r#"
-                // enum Foo {
-                //     Bar
-                // }
-                // use Foo::Bar;
-                // const C: Foo = Foo::Bar;
-                // fn main<const CP: Foo>(param: Foo) {
-                //     let local = Foo::Bar;
-                //     let _: Foo = CP;
-                //                //^ error: invalid `_` expression, expected type `fn()`
-                // }
-                // "#,
-                //                 r#"
-                // enum Foo {
-                //     Bar
-                // }
-                // use Foo::Bar;
-                // const C: Foo = Foo::Bar;
-                // fn main<const CP: Foo>(param: Foo) {
-                //     let local = Foo::Bar;
-                //     let _: Foo = Bar;
-                //                //^ error: invalid `_` expression, expected type `fn()`
-                // }
-                // "#,
+                r#"
+enum Foo {
+    Bar
+}
+use Foo::Bar;
+const C: Foo = Foo::Bar;
+fn main<const CP: Foo>(param: Foo) {
+    let local = Foo::Bar;
+    let _: Foo = CP;
+               //^ error: invalid `_` expression, expected type `fn()`
+}
+"#,
                 r#"
 enum Foo {
     Bar
@@ -668,6 +659,18 @@ const C: Foo = Foo::Bar;
 fn main<const CP: Foo>(param: Foo) {
     let local = Foo::Bar;
     let _: Foo = C;
+               //^ error: invalid `_` expression, expected type `fn()`
+}
+"#,
+                r#"
+enum Foo {
+    Bar
+}
+use Foo::Bar;
+const C: Foo = Foo::Bar;
+fn main<const CP: Foo>(param: Foo) {
+    let local = Foo::Bar;
+    let _: Foo = Bar;
                //^ error: invalid `_` expression, expected type `fn()`
 }
 "#,
