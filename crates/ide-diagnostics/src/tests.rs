@@ -64,6 +64,12 @@ fn check_nth_fix(nth: usize, ra_fixture_before: &str, ra_fixture_after: &str) {
     assert_eq_text!(&after, &actual);
 }
 
+pub(crate) fn check_fixes_unordered(ra_fixture_before: &str, ra_fixtures_after: Vec<&str>) {
+    for ra_fixture_after in ra_fixtures_after.iter() {
+        check_has_fix(ra_fixture_before, ra_fixture_after)
+    }
+}
+
 #[track_caller]
 pub(crate) fn check_has_fix(ra_fixture_before: &str, ra_fixture_after: &str) {
     let after = trim_indent(ra_fixture_after);

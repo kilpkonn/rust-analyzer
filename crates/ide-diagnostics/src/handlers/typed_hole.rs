@@ -1,7 +1,7 @@
 use hir::{
     db::{ExpandDatabase, HirDatabase},
     Adt, AssocItem, ClosureStyle, Const, ConstParam, Function, GenericParam, HirDisplay, Impl,
-    Local, Module, ModuleDef, ScopeDef, SemanticsScope, Static, Struct, StructKind, Type, Variant,
+    Local, Module, ModuleDef, ScopeDef, Static, Struct, StructKind, Type, Variant,
 };
 use ide_db::{
     assists::{Assist, AssistId, AssistKind, GroupLabel},
@@ -102,8 +102,9 @@ fn fixes(ctx: &DiagnosticsContext<'_>, d: &hir::TypedHole) -> Option<Vec<Assist>
     vars = vars.into_iter().unique().collect();
     funcs = funcs.into_iter().unique().collect();
 
-    dbg!(&names);
-    let paths = dfs_term_search(&d.expected, &vars, &funcs, db, 3, &scope).into_iter().unique();
+    // dbg!(&names);
+    let mut paths = dfs_term_search(&d.expected, &vars, &funcs, db, 2);
+    paths.sort_by(|(d1, _), (d2, _)| d1.cmp(d2));
 
     let mut assists = vec![];
     for (_d, path) in paths {
@@ -163,7 +164,7 @@ impl TypeInhabitant {
             TypeInhabitant::ConstParam(it) => it.ty(db),
         }
     }
-    fn could_unify_with(&self, db: &dyn HirDatabase, ty: &Type) -> bool {
+    fn could_unify_with_normalized(&self, db: &dyn HirDatabase, ty: &Type) -> bool {
         self.ty(db).could_unify_with_normalized(db, ty)
     }
 }
@@ -197,7 +198,7 @@ fn gen_module_prefix(
 }
 
 impl TypeTransformation {
-    fn could_unify_with(&self, db: &dyn HirDatabase, ty: &Type) -> bool {
+    fn could_unify_with_normalized(&self, db: &dyn HirDatabase, ty: &Type) -> bool {
         self.ret_ty(db).could_unify_with_normalized(db, ty)
     }
 
@@ -318,7 +319,7 @@ impl TypeTree {
         }
     }
 
-    fn could_unify_with(&self, db: &dyn HirDatabase, ty: &Type) -> bool {
+    fn could_unify_with_normalized(&self, db: &dyn HirDatabase, ty: &Type) -> bool {
         self.ty(db).could_unify_with_normalized(db, ty)
     }
 }
@@ -329,7 +330,6 @@ fn dfs_search_assoc_item(
     funcs: &[TypeTransformation],
     db: &dyn HirDatabase,
     depth: u32,
-    scope: &SemanticsScope<'_>,
 ) -> Vec<(u32, TypeTree)> {
     if depth == 0 {
         return Vec::new();
@@ -354,7 +354,6 @@ fn dfs_search_assoc_item(
                                     funcs,
                                     db,
                                     depth.saturating_sub(1),
-                                    scope,
                                 );
                                 let max = tts.iter().map(|(d, _)| *d).max().unwrap_or(0);
                                 tts.into_iter().filter(|(d, _)| *d >= max).collect()
@@ -378,15 +377,8 @@ fn dfs_search_assoc_item(
                     let rec_res: Vec<(u32, TypeTree)> = new_tts
                         .iter()
                         .flat_map(|(d, new_tt)| {
-                            dfs_search_assoc_item(
-                                &new_tt,
-                                vars,
-                                funcs,
-                                db,
-                                d.saturating_sub(1),
-                                scope,
-                            )
-                            .into_iter()
+                            dfs_search_assoc_item(&new_tt, vars, funcs, db, d.saturating_sub(1))
+                                .into_iter()
                         })
                         .collect();
 
@@ -395,6 +387,7 @@ fn dfs_search_assoc_item(
                 })
         })
         .flatten()
+        .unique()
         .collect()
 }
 
@@ -404,7 +397,6 @@ fn dfs_term_search(
     funcs: &[TypeTransformation],
     db: &dyn HirDatabase,
     depth: u32,
-    scope: &SemanticsScope<'_>,
 ) -> Vec<(u32, TypeTree)> {
     if depth == 0 {
         return Vec::new();
@@ -412,7 +404,7 @@ fn dfs_term_search(
 
     let mut fulfilling_vars: Vec<(u32, TypeTree)> = vars
         .iter()
-        .filter(|&ty| ty.could_unify_with(db, goal))
+        .filter(|&ty| ty.could_unify_with_normalized(db, goal))
         .map(|it| (depth, TypeTree::TypeInhabitant(it.clone())))
         .collect();
 
@@ -429,34 +421,33 @@ fn dfs_term_search(
                 funcs,
                 db,
                 depth.saturating_sub(1),
-                scope,
             )
         })
-        .filter(|(_, tt)| tt.could_unify_with(db, goal))
+        .filter(|(_, tt)| tt.could_unify_with_normalized(db, goal))
         .collect();
 
     fulfilling_vars.extend(forward_pass_types);
 
     let backward_pass: Vec<(u32, TypeTree)> = funcs
         .iter()
-        .filter(|tr| tr.could_unify_with(db, goal))
+        .filter(|tr| tr.could_unify_with_normalized(db, goal))
         .filter_map(|tr| match tr {
             TypeTransformation::Function(func) => {
                 let mut param_trees = func.assoc_fn_params(db).into_iter().map(|param| {
-                    dfs_term_search(param.ty(), vars, funcs, db, depth.saturating_sub(1), scope)
+                    dfs_term_search(param.ty(), vars, funcs, db, depth.saturating_sub(1))
                 });
                 build_permutations(&mut param_trees, tr.clone())
             }
             TypeTransformation::ImplFunction(_, _) => None,
             TypeTransformation::Variant(variant) => {
                 let mut param_trees = variant.fields(db).into_iter().map(|field| {
-                    dfs_term_search(&field.ty(db), vars, funcs, db, depth.saturating_sub(1), scope)
+                    dfs_term_search(&field.ty(db), vars, funcs, db, depth.saturating_sub(1))
                 });
                 build_permutations(&mut param_trees, tr.clone())
             }
             TypeTransformation::Struct(strukt) => {
                 let mut param_trees = strukt.fields(db).into_iter().map(|field| {
-                    dfs_term_search(&field.ty(db), vars, funcs, db, depth.saturating_sub(1), scope)
+                    dfs_term_search(&field.ty(db), vars, funcs, db, depth.saturating_sub(1))
                 });
                 build_permutations(&mut param_trees, tr.clone())
             }
@@ -465,7 +456,7 @@ fn dfs_term_search(
         .collect();
     fulfilling_vars.extend(backward_pass);
 
-    fulfilling_vars
+    fulfilling_vars.into_iter().unique().collect()
 }
 
 fn build_permutations<'a>(
@@ -498,7 +489,7 @@ fn build_permutations<'a>(
 
 #[cfg(test)]
 mod tests {
-    use crate::tests::{check_diagnostics, check_fixes, check_has_fix};
+    use crate::tests::{check_diagnostics, check_fixes_unordered, check_has_fix};
 
     #[test]
     fn unknown() {
@@ -572,7 +563,7 @@ fn main() {
 
     #[test]
     fn check_quick_fix() {
-        check_fixes(
+        check_fixes_unordered(
             r#"
 enum Foo {
     Bar
@@ -586,6 +577,18 @@ fn main<const CP: Foo>(param: Foo) {
 }
 "#,
             vec![
+                r#"
+enum Foo {
+    Bar
+}
+use Foo::Bar;
+const C: Foo = Foo::Bar;
+fn main<const CP: Foo>(param: Foo) {
+    let local = Foo::Bar;
+    let _: Foo = Bar;
+               //^ error: invalid `_` expression, expected type `fn()`
+}
+"#,
                 r#"
 enum Foo {
     Bar
@@ -631,18 +634,6 @@ const C: Foo = Foo::Bar;
 fn main<const CP: Foo>(param: Foo) {
     let local = Foo::Bar;
     let _: Foo = C;
-               //^ error: invalid `_` expression, expected type `fn()`
-}
-"#,
-                r#"
-enum Foo {
-    Bar
-}
-use Foo::Bar;
-const C: Foo = Foo::Bar;
-fn main<const CP: Foo>(param: Foo) {
-    let local = Foo::Bar;
-    let _: Foo = Bar;
                //^ error: invalid `_` expression, expected type `fn()`
 }
 "#,
