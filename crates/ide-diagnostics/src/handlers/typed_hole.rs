@@ -145,12 +145,17 @@ impl TypeInhabitant {
     ) -> String {
         let db = sema.db;
         let (name, module) = match self {
-            TypeInhabitant::Const(it) => (it.name(db).expect("Sum Ting Wong!?!"), it.module(db)),
-            TypeInhabitant::Static(it) => (it.name(db), it.module(db)),
-            TypeInhabitant::Local(it) => (it.name(db), it.module(db)),
-            TypeInhabitant::ConstParam(it) => (it.name(db), it.module(db)),
+            TypeInhabitant::Const(it) => {
+                let name = match it.name(db) {
+                    Some(it) => it.display(db).to_string(),
+                    None => String::from("_"),
+                };
+                (name, it.module(db))
+            }
+            TypeInhabitant::Static(it) => (it.name(db).display(db).to_string(), it.module(db)),
+            TypeInhabitant::Local(it) => (it.name(db).display(db).to_string(), it.module(db)),
+            TypeInhabitant::ConstParam(it) => (it.name(db).display(db).to_string(), it.module(db)),
         };
-        let name = name.display(db).to_string();
         let prefix = gen_module_prefix(module, items_in_scope, db);
         format!("{}{}", prefix, name)
     }
@@ -183,11 +188,10 @@ fn gen_module_prefix(
 ) -> String {
     let mut prefix = String::new();
     while !items_in_scope.contains(&ScopeDef::ModuleDef(ModuleDef::Module(module))) {
-        let mod_name = match module.name(db) {
-            Some(m) => m.display(db.upcast()).to_string(),
-            None => String::from("<no_mod_name>"),
+        match module.name(db) {
+            Some(m) => prefix = format!("{}::{}", m.display(db.upcast()).to_string(), prefix),
+            None => (),
         };
-        prefix = format!("{}::{}", mod_name, prefix);
         match module.parent(db) {
             Some(m) => module = m,
             None => break,
