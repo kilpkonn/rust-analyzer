@@ -25,7 +25,7 @@
 
 #![warn(rust_2018_idioms, unused_lifetimes, semicolon_in_expressions_from_macros)]
 
-mod handlers {
+pub mod handlers {
     pub(crate) mod break_outside_of_loop;
     pub(crate) mod expected_function;
     pub(crate) mod inactive_code;
@@ -44,7 +44,7 @@ mod handlers {
     pub(crate) mod private_assoc_item;
     pub(crate) mod private_field;
     pub(crate) mod replace_filter_map_next_with_find_map;
-    pub(crate) mod typed_hole;
+    pub mod typed_hole;
     pub(crate) mod type_mismatch;
     pub(crate) mod unimplemented_builtin_macro;
     pub(crate) mod unresolved_extern_crate;

@@ -1552,6 +1552,7 @@ dependencies = [
  "hir-ty",
  "ide",
  "ide-db",
+ "ide-diagnostics",
  "ide-ssr",
  "itertools",
  "load-cargo",

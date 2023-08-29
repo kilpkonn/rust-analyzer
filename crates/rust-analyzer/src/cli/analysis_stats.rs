@@ -8,7 +8,7 @@ use std::{
 
 use hir::{
     db::{DefDatabase, ExpandDatabase, HirDatabase},
-    Adt, AssocItem, Crate, DefWithBody, HasSource, HirDisplay, ModuleDef, Name,
+    Adt, AssocItem, Crate, DefWithBody, HasSource, HirDisplay, InFile, ModuleDef, Name, TypedHole,
 };
 use hir_def::{
     body::{BodySourceMap, SyntheticSyntax},
@@ -30,7 +30,7 @@ use profile::{Bytes, StopWatch};
 use project_model::{CargoConfig, ProjectManifest, ProjectWorkspace, RustLibSource};
 use rayon::prelude::*;
 use rustc_hash::FxHashSet;
-use syntax::{AstNode, SyntaxNode};
+use syntax::{AstNode, AstPtr, SyntaxNode};
 use vfs::{AbsPathBuf, FileId, Vfs, VfsPath};
 
 use crate::cli::{
@@ -226,7 +226,11 @@ impl flags::AnalysisStats {
         }
 
         if self.run_all_ide_things {
-            self.run_ide_things(host.analysis(), file_ids);
+            self.run_ide_things(host.analysis(), file_ids.clone());
+        }
+
+        if self.run_term_search {
+            self.run_term_search(db, file_ids, verbosity);
         }
 
         let total_span = analysis_sw.elapsed();
@@ -315,6 +319,118 @@ impl flags::AnalysisStats {
         eprintln!("Failed const evals: {fail} ({}%)", percentage(fail, all));
         report_metric("failed const evals", fail, "#");
         report_metric("const eval time", const_eval_time.time.as_millis() as u64, "ms");
+    }
+
+    fn run_term_search(&self, db: &RootDatabase, mut file_ids: Vec<FileId>, verbosity: Verbosity) {
+        let mut bar = match verbosity {
+            Verbosity::Quiet | Verbosity::Spammy => ProgressReport::hidden(),
+            _ if self.parallel || self.output.is_some() => ProgressReport::hidden(),
+            _ => ProgressReport::new(file_ids.len() as u64),
+        };
+
+        file_ids.sort();
+        file_ids.dedup();
+
+        #[derive(Debug, Default)]
+        struct Acc {
+            tail_expr_syntax_hits: u64,
+            total_tail_exprs: u64,
+        }
+
+        let mut acc: Acc = Default::default();
+        bar.tick();
+
+        for &file_id in &file_ids {
+            let sema = hir::Semantics::new(db);
+            let _ = db.parse(file_id);
+
+            let parse = sema.parse(file_id);
+
+            for node in parse.syntax().descendants() {
+                let expr = match syntax::ast::Expr::cast(node.clone()) {
+                    Some(it) => it,
+                    None => continue,
+                };
+                let block = match syntax::ast::BlockExpr::cast(expr.syntax().clone()) {
+                    Some(it) => it,
+                    None => continue,
+                };
+                let target_ty = match sema.type_of_expr(&expr) {
+                    Some(it) => it,
+                    None => continue, // Failed to infer type
+                };
+
+                let expected_tail = match block.tail_expr() {
+                    Some(it) => it,
+                    None => continue,
+                };
+
+                if expected_tail.is_block_like() {
+                    continue;
+                }
+
+                let range = sema.original_range(&expected_tail.syntax()).range;
+                let original_text: String = db
+                    .file_text(file_id)
+                    .chars()
+                    .into_iter()
+                    .skip(usize::from(range.start()))
+                    .take(usize::from(range.end()) - usize::from(range.start()))
+                    .collect();
+                // let expected_edit = ide::TextEdit::replace(range, original_text.clone());
+
+                let hole = TypedHole {
+                    expr: InFile::new(file_id.into(), AstPtr::new(&expr)),
+                    expected: target_ty.adjusted(),
+                };
+
+                let assists = match ide_diagnostics::handlers::typed_hole::fixes(&sema, &hole) {
+                    Some(it) => it,
+                    None => continue,
+                };
+
+                fn trim(s: &str) -> String {
+                    s.chars().into_iter().filter(|c| !c.is_whitespace()).collect()
+                }
+
+                let mut syntax_hit_found = false;
+                for assist in assists {
+                    let actual_insert = {
+                        let source_change = assist.source_change.as_ref().unwrap();
+                        assert!(source_change.source_file_edits.values().len() == 1);
+                        let edit = source_change.source_file_edits.values().next().unwrap();
+                        let indel = edit.iter().next().unwrap();
+                        indel.insert.clone()
+                    };
+
+                    syntax_hit_found |= trim(&original_text) == trim(&actual_insert);
+                }
+                if syntax_hit_found {
+                    acc.tail_expr_syntax_hits += 1;
+                }
+                acc.total_tail_exprs += 1;
+
+                let msg = move || {
+                    format!(
+                        "processing: {:<40}",
+                        trim(&original_text).chars().take(40).collect::<String>()
+                    )
+                };
+                if verbosity.is_spammy() {
+                    bar.println(msg());
+                }
+                bar.set_message(msg);
+            }
+            bar.inc(1);
+        }
+        bar.println(format!(
+            "Tail Expr hits: {}/{} ({})%",
+            acc.tail_expr_syntax_hits,
+            acc.total_tail_exprs,
+            percentage(acc.tail_expr_syntax_hits, acc.total_tail_exprs)
+        ));
+
+        bar.finish_and_clear();
     }
 
     fn run_mir_lowering(&self, db: &RootDatabase, bodies: &[DefWithBody], verbosity: Verbosity) {

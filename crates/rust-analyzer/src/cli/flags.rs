@@ -92,6 +92,8 @@ xflags::xflags! {
             /// and annotations. This is useful for benchmarking the memory usage on a project that has
             /// been worked on for a bit in a longer running session.
             optional --run-all-ide-things
+            /// Run term search
+            optional --run-term-search
         }
 
         /// Run unit tests of the project using mir interpreter
@@ -204,6 +206,7 @@ pub struct AnalysisStats {
     pub skip_data_layout: bool,
     pub skip_const_eval: bool,
     pub run_all_ide_things: bool,
+    pub run_term_search: bool,
 }
 
 #[derive(Debug)]

@@ -71,6 +71,7 @@ syntax.workspace = true
 toolchain.workspace = true
 vfs-notify.workspace = true
 vfs.workspace = true
+ide-diagnostics.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 winapi = "0.3.9"

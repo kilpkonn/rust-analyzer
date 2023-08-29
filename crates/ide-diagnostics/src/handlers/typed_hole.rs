@@ -1,13 +1,13 @@
 use hir::{
     db::{ExpandDatabase, HirDatabase},
     Adt, AssocItem, ClosureStyle, Const, ConstParam, Function, GenericParam, HirDisplay, Impl,
-    Local, Module, ModuleDef, ScopeDef, Static, Struct, StructKind, Type, Variant,
+    Local, Module, ModuleDef, ScopeDef, Semantics, Static, Struct, StructKind, Type, Variant,
 };
 use ide_db::{
     assists::{Assist, AssistId, AssistKind, GroupLabel},
     label::Label,
     source_change::SourceChange,
-    FxHashSet,
+    FxHashSet, RootDatabase,
 };
 use text_edit::TextEdit;
 
@@ -32,7 +32,7 @@ pub(crate) fn typed_hole(ctx: &DiagnosticsContext<'_>, d: &hir::TypedHole) -> Di
                 "invalid `_` expression, expected type `{}`",
                 d.expected.display(ctx.sema.db).with_closure_style(ClosureStyle::ClosureWithId),
             ),
-            fixes(ctx, d),
+            fixes(&ctx.sema, d),
         )
     };
 
@@ -40,12 +40,12 @@ pub(crate) fn typed_hole(ctx: &DiagnosticsContext<'_>, d: &hir::TypedHole) -> Di
         .with_fixes(fixes)
 }
 
-fn fixes(ctx: &DiagnosticsContext<'_>, d: &hir::TypedHole) -> Option<Vec<Assist>> {
-    let db = ctx.sema.db;
+pub fn fixes(sema: &Semantics<'_, RootDatabase>, d: &hir::TypedHole) -> Option<Vec<Assist>> {
+    let db = sema.db;
     let root = db.parse_or_expand(d.expr.file_id);
     let original_range =
         d.expr.as_ref().map(|it| it.to_node(&root)).syntax().original_file_range_opt(db)?;
-    let scope = ctx.sema.scope(d.expr.value.to_node(&root).syntax())?;
+    let scope = sema.scope(d.expr.value.to_node(&root).syntax())?;
 
     let mut funcs = Vec::default();
     let mut vars = Vec::default();
@@ -102,13 +102,12 @@ fn fixes(ctx: &DiagnosticsContext<'_>, d: &hir::TypedHole) -> Option<Vec<Assist>
     vars = vars.into_iter().unique().collect();
     funcs = funcs.into_iter().unique().collect();
 
-    // dbg!(&names);
     let mut paths = dfs_term_search(&d.expected, &vars, &funcs, db, 2);
     paths.sort_by(|(d1, _), (d2, _)| d1.cmp(d2));
 
     let mut assists = vec![];
     for (_d, path) in paths {
-        let code = path.gen_source_code(&items_in_scope, ctx);
+        let code = path.gen_source_code(&items_in_scope, sema);
 
         assists.push(Assist {
             id: AssistId("typed-hole", AssistKind::QuickFix),
@@ -122,7 +121,7 @@ fn fixes(ctx: &DiagnosticsContext<'_>, d: &hir::TypedHole) -> Option<Vec<Assist>
             trigger_signature_help: false,
         });
     }
-    dbg!(&assists.iter().map(|a| a.label.to_string()).collect::<Vec<_>>());
+    // dbg!(&assists.iter().map(|a| a.label.to_string()).collect::<Vec<_>>());
     if !assists.is_empty() {
         Some(assists)
     } else {
@@ -142,9 +141,9 @@ impl TypeInhabitant {
     fn gen_source_code(
         &self,
         items_in_scope: &FxHashSet<ScopeDef>,
-        ctx: &DiagnosticsContext<'_>,
+        sema: &Semantics<'_, RootDatabase>,
     ) -> String {
-        let db = ctx.sema.db;
+        let db = sema.db;
         let (name, module) = match self {
             TypeInhabitant::Const(it) => (it.name(db).expect("Sum Ting Wong!?!"), it.module(db)),
             TypeInhabitant::Static(it) => (it.name(db), it.module(db)),
@@ -214,22 +213,23 @@ impl TypeTransformation {
         &self,
         params: &[TypeTree],
         items_in_scope: &FxHashSet<ScopeDef>,
-        ctx: &DiagnosticsContext<'_>,
+        sema: &Semantics<'_, RootDatabase>,
     ) -> String {
-        let db = ctx.sema.db;
+        let db = sema.db;
         match self {
             Self::Function(it) => {
-                let args = params.iter().map(|f| f.gen_source_code(items_in_scope, ctx)).join(", ");
+                let args =
+                    params.iter().map(|f| f.gen_source_code(items_in_scope, sema)).join(", ");
                 let sig = format!("{}({})", it.name(db).display(db).to_string(), args);
                 format!("{}{}", gen_module_prefix(it.module(db), items_in_scope, db), sig)
             }
             Self::ImplFunction(it, _imp) => {
                 let target =
-                    params.first().expect("no self param").gen_source_code(items_in_scope, ctx);
+                    params.first().expect("no self param").gen_source_code(items_in_scope, sema);
                 let args = params
                     .iter()
                     .skip(1)
-                    .map(|f| f.gen_source_code(items_in_scope, ctx))
+                    .map(|f| f.gen_source_code(items_in_scope, sema))
                     .join(", ");
                 format!("{}.{}({})", target, it.name(db).display(db).to_string(), args)
             }
@@ -238,7 +238,7 @@ impl TypeTransformation {
                     StructKind::Tuple => {
                         let args = params
                             .iter()
-                            .map(|f| f.gen_source_code(items_in_scope, ctx))
+                            .map(|f| f.gen_source_code(items_in_scope, sema))
                             .join(", ");
                         format!("{}({})", variant.name(db).display(db).to_string(), args)
                     }
@@ -251,7 +251,7 @@ impl TypeTransformation {
                                 format!(
                                     "{}: {}",
                                     f.name(db).display(db).to_string(),
-                                    a.gen_source_code(items_in_scope, ctx)
+                                    a.gen_source_code(items_in_scope, sema)
                                 )
                             })
                             .join(", ");
@@ -279,7 +279,7 @@ impl TypeTransformation {
                         format!(
                             "{}: {}",
                             f.name(db).display(db).to_string(),
-                            a.gen_source_code(items_in_scope, ctx)
+                            a.gen_source_code(items_in_scope, sema)
                         )
                     })
                     .join(", ");
@@ -302,12 +302,12 @@ impl TypeTree {
     fn gen_source_code(
         &self,
         items_in_scope: &FxHashSet<ScopeDef>,
-        ctx: &DiagnosticsContext<'_>,
+        sema: &Semantics<'_, RootDatabase>,
     ) -> String {
         match self {
-            TypeTree::TypeInhabitant(it) => it.gen_source_code(items_in_scope, ctx),
+            TypeTree::TypeInhabitant(it) => it.gen_source_code(items_in_scope, sema),
             TypeTree::TypeTransformation { func, params } => {
-                func.gen_source_code(&params, items_in_scope, ctx)
+                func.gen_source_code(&params, items_in_scope, sema)
             }
         }
     }
