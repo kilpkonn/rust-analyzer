@@ -1859,15 +1859,6 @@ impl Function {
         Type::new_with_resolver_inner(db, &resolver, ty)
     }
 
-    /// Get this function's return type
-    pub fn ret_type_for_impl(self, _imp: &Impl, db: &dyn HirDatabase) -> Type {
-        let resolver = self.id.resolver(db.upcast());
-        let substs = TyBuilder::placeholder_subst(db, self.id);
-        let callable_sig = db.callable_item_signature(self.id.into()).substitute(Interner, &substs);
-        let ty = callable_sig.ret().clone();
-        Type::new_with_resolver_inner(db, &resolver, ty)
-    }
-
     pub fn async_ret_type(self, db: &dyn HirDatabase) -> Option<Type> {
         if !self.is_async(db) {
             return None;

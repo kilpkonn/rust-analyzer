@@ -47,67 +47,21 @@ pub fn fixes(sema: &Semantics<'_, RootDatabase>, d: &hir::TypedHole) -> Option<V
         d.expr.as_ref().map(|it| it.to_node(&root)).syntax().original_file_range_opt(db)?;
     let scope = sema.scope(d.expr.value.to_node(&root).syntax())?;
 
-    let mut funcs = Vec::default();
-    let mut vars = Vec::default();
     let mut names = Vec::default();
-    let mut items_in_scope = FxHashSet::default();
-    items_in_scope.insert(ScopeDef::ModuleDef(ModuleDef::Module(scope.module())));
+    let mut defs = FxHashSet::default();
+    defs.insert(ScopeDef::ModuleDef(ModuleDef::Module(scope.module())));
 
-    fn process_def(
-        def: ScopeDef,
-        funcs: &mut Vec<TypeTransformation>,
-        vars: &mut Vec<TypeInhabitant>,
-        db: &dyn HirDatabase,
-    ) {
-        match def {
-            ScopeDef::ModuleDef(ModuleDef::Function(it)) => {
-                funcs.push(TypeTransformation::Function(it));
-            }
-            ScopeDef::ModuleDef(ModuleDef::Const(it)) => {
-                vars.push(TypeInhabitant::Const(it));
-            }
-            ScopeDef::ModuleDef(ModuleDef::Static(it)) => {
-                vars.push(TypeInhabitant::Static(it));
-            }
-            ScopeDef::ModuleDef(ModuleDef::Variant(it)) => {
-                funcs.push(TypeTransformation::Variant(it));
-            }
-            ScopeDef::ModuleDef(ModuleDef::Adt(Adt::Enum(it))) => {
-                let variants = it.variants(db).into_iter().map(|v| TypeTransformation::Variant(v));
-                funcs.extend(variants);
-            }
-            ScopeDef::ModuleDef(ModuleDef::Adt(Adt::Struct(it))) => {
-                funcs.push(TypeTransformation::Struct(it));
-            }
-            ScopeDef::ModuleDef(ModuleDef::Module(_it)) => {
-                // it.declarations(db)
-                //     .into_iter()
-                //     .for_each(|def| process_def(ScopeDef::ModuleDef(def), funcs, vars, db));
-            }
-            ScopeDef::GenericParam(GenericParam::ConstParam(it)) => {
-                vars.push(TypeInhabitant::ConstParam(it));
-            }
-            ScopeDef::Local(it) => {
-                vars.push(TypeInhabitant::Local(it));
-            }
-            _ => {}
-        };
-    }
     scope.process_all_names(&mut |name, def| {
         names.push(format!("{} - {:?}", name.display(db).to_string(), def));
-        items_in_scope.insert(def);
-        process_def(def, &mut funcs, &mut vars, db);
+        defs.insert(def);
     });
 
-    vars = vars.into_iter().unique().collect();
-    funcs = funcs.into_iter().unique().collect();
-
-    let mut paths = dfs_term_search(&d.expected, &vars, &funcs, db, 2);
+    let mut paths = dfs_term_search(&d.expected, &defs, db, 2);
     paths.sort_by(|(d1, _), (d2, _)| d1.cmp(d2));
 
     let mut assists = vec![];
     for (_d, path) in paths {
-        let code = path.gen_source_code(&items_in_scope, sema);
+        let code = path.gen_source_code(&defs, sema);
 
         assists.push(Assist {
             id: AssistId("typed-hole", AssistKind::QuickFix),
@@ -168,9 +122,6 @@ impl TypeInhabitant {
             TypeInhabitant::ConstParam(it) => it.ty(db),
         }
     }
-    fn could_unify_with_normalized(&self, db: &dyn HirDatabase, ty: &Type) -> bool {
-        self.ty(db).could_unify_with_normalized(db, ty)
-    }
 }
 
 #[derive(Debug, Clone, Eq, Hash, PartialEq)]
@@ -201,14 +152,10 @@ fn gen_module_prefix(
 }
 
 impl TypeTransformation {
-    fn could_unify_with_normalized(&self, db: &dyn HirDatabase, ty: &Type) -> bool {
-        self.ret_ty(db).could_unify_with_normalized(db, ty)
-    }
-
     fn ret_ty(&self, db: &dyn HirDatabase) -> Type {
         match self {
             Self::Function(it) => it.ret_type(db),
-            Self::ImplFunction(it, imp) => it.ret_type_for_impl(&imp, db),
+            Self::ImplFunction(it, _imp) => it.ret_type(db),
             Self::Variant(it) => it.parent_enum(db).ty(db),
             Self::Struct(it) => it.ty(db),
         }
@@ -322,16 +269,11 @@ impl TypeTree {
             TypeTree::TypeTransformation { func, .. } => func.ret_ty(db),
         }
     }
-
-    fn could_unify_with_normalized(&self, db: &dyn HirDatabase, ty: &Type) -> bool {
-        self.ty(db).could_unify_with_normalized(db, ty)
-    }
 }
 
 fn dfs_search_assoc_item(
     tt: &TypeTree,
-    vars: &[TypeInhabitant],
-    funcs: &[TypeTransformation],
+    defs: &FxHashSet<ScopeDef>,
     db: &dyn HirDatabase,
     depth: u32,
 ) -> Vec<(u32, TypeTree)> {
@@ -352,13 +294,8 @@ fn dfs_search_assoc_item(
                     let param_trees: Vec<Vec<(u32, TypeTree)>> =
                         iter::once(vec![(depth, tt.clone())])
                             .chain(func.params_without_self(db).into_iter().map(|param| {
-                                let tts = dfs_term_search(
-                                    param.ty(),
-                                    vars,
-                                    funcs,
-                                    db,
-                                    depth.saturating_sub(1),
-                                );
+                                let tts =
+                                    dfs_term_search(param.ty(), defs, db, depth.saturating_sub(1));
                                 let max = tts.iter().map(|(d, _)| *d).max().unwrap_or(0);
                                 tts.into_iter().filter(|(d, _)| *d >= max).collect()
                             }))
@@ -381,7 +318,7 @@ fn dfs_search_assoc_item(
                     let rec_res: Vec<(u32, TypeTree)> = new_tts
                         .iter()
                         .flat_map(|(d, new_tt)| {
-                            dfs_search_assoc_item(&new_tt, vars, funcs, db, d.saturating_sub(1))
+                            dfs_search_assoc_item(&new_tt, defs, db, d.saturating_sub(1))
                                 .into_iter()
                         })
                         .collect();
@@ -397,8 +334,7 @@ fn dfs_search_assoc_item(
 
 fn dfs_term_search(
     goal: &Type,
-    vars: &[TypeInhabitant],
-    funcs: &[TypeTransformation],
+    defs: &FxHashSet<ScopeDef>,
     db: &dyn HirDatabase,
     depth: u32,
 ) -> Vec<(u32, TypeTree)> {
@@ -406,65 +342,116 @@ fn dfs_term_search(
         return Vec::new();
     }
 
-    let mut fulfilling_vars: Vec<(u32, TypeTree)> = vars
-        .iter()
-        .filter(|&ty| ty.could_unify_with_normalized(db, goal))
-        .map(|it| (depth, TypeTree::TypeInhabitant(it.clone())))
-        .collect();
+    let mut res = Vec::new();
 
-    let forward_pass_types: Vec<(u32, TypeTree)> = vars
-        .iter()
-        .filter(|it| match it {
-            TypeInhabitant::Local(_) => true,
-            _ => false,
-        })
-        .flat_map(|tt| {
-            dfs_search_assoc_item(
-                &TypeTree::TypeInhabitant(tt.clone()),
-                vars,
-                funcs,
-                db,
-                depth.saturating_sub(1),
-            )
-        })
-        .filter(|(_, tt)| tt.could_unify_with_normalized(db, goal))
-        .collect();
-
-    fulfilling_vars.extend(forward_pass_types);
-
-    let backward_pass: Vec<(u32, TypeTree)> = funcs
-        .iter()
-        .filter(|tr| tr.could_unify_with_normalized(db, goal))
-        .filter_map(|tr| match tr {
-            TypeTransformation::Function(func) => {
-                let mut param_trees = func.assoc_fn_params(db).into_iter().map(|param| {
-                    dfs_term_search(param.ty(), vars, funcs, db, depth.saturating_sub(1))
-                });
-                build_permutations(&mut param_trees, tr.clone())
+    for def in defs {
+        match def {
+            ScopeDef::ModuleDef(ModuleDef::Const(it)) => {
+                if it.ty(db).could_unify_with_normalized(db, goal) {
+                    res.push((depth, TypeTree::TypeInhabitant(TypeInhabitant::Const(*it))));
+                } else {
+                    res.extend(dfs_search_assoc_item(
+                        &TypeTree::TypeInhabitant(TypeInhabitant::Const(*it)),
+                        defs,
+                        db,
+                        depth.saturating_sub(1),
+                    ));
+                }
             }
-            TypeTransformation::ImplFunction(_, _) => None,
-            TypeTransformation::Variant(variant) => {
-                let mut param_trees = variant.fields(db).into_iter().map(|field| {
-                    dfs_term_search(&field.ty(db), vars, funcs, db, depth.saturating_sub(1))
-                });
-                build_permutations(&mut param_trees, tr.clone())
+            ScopeDef::ModuleDef(ModuleDef::Static(it)) => {
+                if it.ty(db).could_unify_with_normalized(db, goal) {
+                    res.push((depth, TypeTree::TypeInhabitant(TypeInhabitant::Static(*it))));
+                } else {
+                    res.extend(dfs_search_assoc_item(
+                        &TypeTree::TypeInhabitant(TypeInhabitant::Static(*it)),
+                        defs,
+                        db,
+                        depth.saturating_sub(1),
+                    ));
+                }
             }
-            TypeTransformation::Struct(strukt) => {
-                let mut param_trees = strukt.fields(db).into_iter().map(|field| {
-                    dfs_term_search(&field.ty(db), vars, funcs, db, depth.saturating_sub(1))
-                });
-                build_permutations(&mut param_trees, tr.clone())
+            ScopeDef::GenericParam(GenericParam::ConstParam(it)) => {
+                if it.ty(db).could_unify_with_normalized(db, goal) {
+                    res.push((depth, TypeTree::TypeInhabitant(TypeInhabitant::ConstParam(*it))));
+                } else {
+                    res.extend(dfs_search_assoc_item(
+                        &TypeTree::TypeInhabitant(TypeInhabitant::ConstParam(*it)),
+                        defs,
+                        db,
+                        depth.saturating_sub(1),
+                    ));
+                }
             }
-        })
-        .flatten()
-        .collect();
-    fulfilling_vars.extend(backward_pass);
-
-    fulfilling_vars.into_iter().unique().collect()
+            ScopeDef::Local(it) => {
+                if it.ty(db).could_unify_with_normalized(db, goal) {
+                    res.push((depth, TypeTree::TypeInhabitant(TypeInhabitant::Local(*it))));
+                } else {
+                    res.extend(dfs_search_assoc_item(
+                        &TypeTree::TypeInhabitant(TypeInhabitant::Local(*it)),
+                        defs,
+                        db,
+                        depth.saturating_sub(1),
+                    ));
+                }
+            }
+            ScopeDef::ModuleDef(ModuleDef::Function(it)) => {
+                if it.ret_type(db).could_unify_with_normalized(db, goal) {
+                    let param_trees = it.assoc_fn_params(db).into_iter().map(|param| {
+                        dfs_term_search(param.ty(), defs, db, depth.saturating_sub(1))
+                    });
+                    if let Some(tts) =
+                        build_permutations(param_trees, TypeTransformation::Function(*it))
+                    {
+                        res.extend(tts);
+                    }
+                }
+            }
+            ScopeDef::ModuleDef(ModuleDef::Variant(it)) => {
+                if it.parent_enum(db).ty(db).could_unify_with_normalized(db, goal) {
+                    let param_trees = it.fields(db).into_iter().map(|field| {
+                        dfs_term_search(&field.ty(db), defs, db, depth.saturating_sub(1))
+                    });
+                    if let Some(tts) =
+                        build_permutations(param_trees, TypeTransformation::Variant(*it))
+                    {
+                        res.extend(tts);
+                    }
+                }
+            }
+            ScopeDef::ModuleDef(ModuleDef::Adt(Adt::Enum(it))) => {
+                for variant in it.variants(db) {
+                    if it.ty(db).could_unify_with_normalized(db, goal) {
+                        let param_trees = variant.fields(db).into_iter().map(|field| {
+                            dfs_term_search(&field.ty(db), defs, db, depth.saturating_sub(1))
+                        });
+                        if let Some(tts) =
+                            build_permutations(param_trees, TypeTransformation::Variant(variant))
+                        {
+                            res.extend(tts);
+                        }
+                    }
+                }
+            }
+            ScopeDef::ModuleDef(ModuleDef::Adt(Adt::Struct(it))) => {
+                if it.ty(db).could_unify_with_normalized(db, goal) {
+                    let param_trees = it.fields(db).into_iter().map(|strukt| {
+                        dfs_term_search(&strukt.ty(db), defs, db, depth.saturating_sub(1))
+                    });
+                    if let Some(tts) =
+                        build_permutations(param_trees, TypeTransformation::Struct(*it))
+                    {
+                        res.extend(tts);
+                    }
+                }
+            }
+            _ => (),
+        }
+    }
+    res.into_iter().unique().collect()
 }
 
-fn build_permutations<'a>(
-    param_trees: &'a mut dyn Iterator<Item = Vec<(u32, TypeTree)>>,
+fn build_permutations(
+    param_trees: impl Iterator<Item = Vec<(u32, TypeTree)>>,
     tt: TypeTransformation,
 ) -> Option<Vec<(u32, TypeTree)>> {
     // Extra case for transformations with 0 params
