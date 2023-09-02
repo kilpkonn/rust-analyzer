@@ -399,11 +399,7 @@ fn dfs_term_search(
                     let param_trees = it.assoc_fn_params(db).into_iter().map(|param| {
                         dfs_term_search(param.ty(), defs, db, depth.saturating_sub(1))
                     });
-                    if let Some(tts) =
-                        build_permutations(param_trees, TypeTransformation::Function(*it))
-                    {
-                        res.extend(tts);
-                    }
+                    res.extend(build_permutations(param_trees, TypeTransformation::Function(*it)));
                 }
             }
             ScopeDef::ModuleDef(ModuleDef::Variant(it)) => {
@@ -411,11 +407,7 @@ fn dfs_term_search(
                     let param_trees = it.fields(db).into_iter().map(|field| {
                         dfs_term_search(&field.ty(db), defs, db, depth.saturating_sub(1))
                     });
-                    if let Some(tts) =
-                        build_permutations(param_trees, TypeTransformation::Variant(*it))
-                    {
-                        res.extend(tts);
-                    }
+                    res.extend(build_permutations(param_trees, TypeTransformation::Variant(*it)));
                 }
             }
             ScopeDef::ModuleDef(ModuleDef::Adt(Adt::Enum(it))) => {
@@ -424,11 +416,11 @@ fn dfs_term_search(
                         let param_trees = variant.fields(db).into_iter().map(|field| {
                             dfs_term_search(&field.ty(db), defs, db, depth.saturating_sub(1))
                         });
-                        if let Some(tts) =
-                            build_permutations(param_trees, TypeTransformation::Variant(variant))
-                        {
-                            res.extend(tts);
-                        }
+
+                        res.extend(build_permutations(
+                            param_trees,
+                            TypeTransformation::Variant(variant),
+                        ));
                     }
                 }
             }
@@ -437,11 +429,7 @@ fn dfs_term_search(
                     let param_trees = it.fields(db).into_iter().map(|strukt| {
                         dfs_term_search(&strukt.ty(db), defs, db, depth.saturating_sub(1))
                     });
-                    if let Some(tts) =
-                        build_permutations(param_trees, TypeTransformation::Struct(*it))
-                    {
-                        res.extend(tts);
-                    }
+                    res.extend(build_permutations(param_trees, TypeTransformation::Struct(*it)));
                 }
             }
             _ => (),
@@ -453,16 +441,13 @@ fn dfs_term_search(
 fn build_permutations(
     param_trees: impl Iterator<Item = Vec<(u32, TypeTree)>>,
     tt: TypeTransformation,
-) -> Option<Vec<(u32, TypeTree)>> {
+) -> Vec<(u32, TypeTree)> {
     // Extra case for transformations with 0 params
     let (param_trees, count_tree) = param_trees.tee();
     if count_tree.count() == 0 {
-        return Some(vec![(
-            0,
-            TypeTree::TypeTransformation { func: tt.clone(), params: Vec::new() },
-        )]);
+        return vec![(0, TypeTree::TypeTransformation { func: tt.clone(), params: Vec::new() })];
     }
-    let res: Vec<_> = param_trees
+    param_trees
         .multi_cartesian_product()
         .map(move |params| {
             (
@@ -473,9 +458,7 @@ fn build_permutations(
                 },
             )
         })
-        .collect();
-
-    Some(res)
+        .collect()
 }
 
 #[cfg(test)]

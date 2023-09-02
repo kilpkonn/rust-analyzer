@@ -334,6 +334,7 @@ impl flags::AnalysisStats {
         #[derive(Debug, Default)]
         struct Acc {
             tail_expr_syntax_hits: u64,
+            tail_expr_no_term: u64,
             total_tail_exprs: u64,
         }
 
@@ -386,7 +387,10 @@ impl flags::AnalysisStats {
 
                 let assists = match ide_diagnostics::handlers::typed_hole::fixes(&sema, &hole) {
                     Some(it) => it,
-                    None => continue,
+                    None => {
+                        acc.tail_expr_no_term += 1;
+                        continue;
+                    }
                 };
 
                 fn trim(s: &str) -> String {
@@ -405,6 +409,7 @@ impl flags::AnalysisStats {
 
                     syntax_hit_found |= trim(&original_text) == trim(&actual_insert);
                 }
+
                 if syntax_hit_found {
                     acc.tail_expr_syntax_hits += 1;
                 }
@@ -424,10 +429,16 @@ impl flags::AnalysisStats {
             bar.inc(1);
         }
         bar.println(format!(
-            "Tail Expr hits: {}/{} ({})%",
+            "Tail Expr syntatix hits: {}/{} ({})%",
             acc.tail_expr_syntax_hits,
             acc.total_tail_exprs,
             percentage(acc.tail_expr_syntax_hits, acc.total_tail_exprs)
+        ));
+        bar.println(format!(
+            "Tail Exprs not found: {}/{} ({})%",
+            acc.tail_expr_no_term,
+            acc.total_tail_exprs,
+            percentage(acc.tail_expr_no_term, acc.total_tail_exprs)
         ));
 
         bar.finish_and_clear();
