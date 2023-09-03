@@ -111,7 +111,7 @@ pub use crate::{
         HighlightConfig, HlRange,
     },
 };
-pub use hir::{Documentation, Semantics};
+pub use hir::Semantics;
 pub use ide_assists::{
     Assist, AssistConfig, AssistId, AssistKind, AssistResolveStrategy, SingleResolve,
 };
@@ -124,10 +124,11 @@ pub use ide_db::{
         Cancelled, Change, CrateGraph, CrateId, Edition, FileId, FilePosition, FileRange,
         SourceRoot, SourceRootId,
     },
+    documentation::Documentation,
     label::Label,
     line_index::{LineCol, LineIndex},
     search::{ReferenceCategory, SearchScope},
-    source_change::{FileSystemEdit, SourceChange},
+    source_change::{FileSystemEdit, SnippetEdit, SourceChange},
     symbol_index::Query,
     RootDatabase, SymbolKind,
 };
@@ -484,7 +485,7 @@ impl Analysis {
         sysroot: Option<&OsStr>,
     ) -> Cancellable<doc_links::DocumentationLinks> {
         self.with_db(|db| {
-            doc_links::external_docs(db, &position, target_dir, sysroot).unwrap_or_default()
+            doc_links::external_docs(db, position, target_dir, sysroot).unwrap_or_default()
         })
     }
 

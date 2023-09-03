@@ -22,6 +22,7 @@ pub mod symbol_index;
 pub mod traits;
 pub mod ty_filter;
 pub mod use_trivial_constructor;
+pub mod documentation;
 
 pub mod imports {
     pub mod import_assets;
@@ -94,18 +95,21 @@ impl fmt::Debug for RootDatabase {
 }
 
 impl Upcast<dyn ExpandDatabase> for RootDatabase {
+    #[inline]
     fn upcast(&self) -> &(dyn ExpandDatabase + 'static) {
         &*self
     }
 }
 
 impl Upcast<dyn DefDatabase> for RootDatabase {
+    #[inline]
     fn upcast(&self) -> &(dyn DefDatabase + 'static) {
         &*self
     }
 }
 
 impl Upcast<dyn HirDatabase> for RootDatabase {
+    #[inline]
     fn upcast(&self) -> &(dyn HirDatabase + 'static) {
         &*self
     }

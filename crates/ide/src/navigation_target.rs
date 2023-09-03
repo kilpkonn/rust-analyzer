@@ -4,14 +4,15 @@ use std::fmt;
 
 use either::Either;
 use hir::{
-    symbols::FileSymbol, AssocItem, Documentation, FieldSource, HasAttrs, HasContainer, HasSource,
-    HirDisplay, HirFileId, InFile, LocalSource, ModuleSource,
+    symbols::FileSymbol, AssocItem, FieldSource, HasContainer, HasSource, HirDisplay, HirFileId,
+    InFile, LocalSource, ModuleSource,
 };
 use ide_db::{
     base_db::{FileId, FileRange},
-    SymbolKind,
+    defs::Definition,
+    documentation::{Documentation, HasDocs},
+    RootDatabase, SymbolKind,
 };
-use ide_db::{defs::Definition, RootDatabase};
 use stdx::never;
 use syntax::{
     ast::{self, HasName},
@@ -102,7 +103,7 @@ impl NavigationTarget {
                 full_range,
                 SymbolKind::Module,
             );
-            res.docs = module.attrs(db).docs();
+            res.docs = module.docs(db);
             res.description = Some(module.display(db).to_string());
             return res;
         }
@@ -175,8 +176,12 @@ impl TryToNav for FileSymbol {
 
         Some(NavigationTarget {
             file_id: full_range.file_id,
-            name: if self.is_alias { self.def.name(db)?.to_smol_str() } else { self.name.clone() },
-            alias: if self.is_alias { Some(self.name.clone()) } else { None },
+            name: self
+                .is_alias
+                .then(|| self.def.name(db))
+                .flatten()
+                .map_or_else(|| self.name.clone(), |it| it.to_smol_str()),
+            alias: self.is_alias.then(|| self.name.clone()),
             kind: Some(hir::ModuleDefId::from(self.def).into()),
             full_range: full_range.range,
             focus_range,
@@ -217,6 +222,7 @@ impl TryToNav for Definition {
             Definition::Trait(it) => it.try_to_nav(db),
             Definition::TraitAlias(it) => it.try_to_nav(db),
             Definition::TypeAlias(it) => it.try_to_nav(db),
+            Definition::ExternCrateDecl(it) => Some(it.try_to_nav(db)?),
             Definition::BuiltinType(_) => None,
             Definition::ToolModule(_) => None,
             Definition::BuiltinAttr(_) => None,
@@ -322,7 +328,7 @@ impl ToNavFromAst for hir::TraitAlias {
 
 impl<D> TryToNav for D
 where
-    D: HasSource + ToNavFromAst + Copy + HasAttrs + HirDisplay,
+    D: HasSource + ToNavFromAst + Copy + HasDocs + HirDisplay,
     D::Ast: ast::HasName,
 {
     fn try_to_nav(&self, db: &RootDatabase) -> Option<NavigationTarget> {
@@ -372,6 +378,30 @@ impl TryToNav for hir::Impl {
             full_range,
             SymbolKind::Impl,
         ))
+    }
+}
+
+impl TryToNav for hir::ExternCrateDecl {
+    fn try_to_nav(&self, db: &RootDatabase) -> Option<NavigationTarget> {
+        let src = self.source(db)?;
+        let InFile { file_id, value } = src;
+        let focus = value
+            .rename()
+            .map_or_else(|| value.name_ref().map(Either::Left), |it| it.name().map(Either::Right));
+        let (file_id, full_range, focus_range) =
+            orig_range_with_focus(db, file_id, value.syntax(), focus);
+        let mut res = NavigationTarget::from_syntax(
+            file_id,
+            self.alias_or_name(db).unwrap_or_else(|| self.name(db)).to_smol_str(),
+            focus_range,
+            full_range,
+            SymbolKind::Module,
+        );
+
+        res.docs = self.docs(db);
+        res.description = Some(self.display(db).to_string());
+        res.container_name = container_name(db, *self);
+        Some(res)
     }
 }
 

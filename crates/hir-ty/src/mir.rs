@@ -234,6 +234,7 @@ impl Place {
         self.local == child.local && child.projection.starts_with(&self.projection)
     }
 
+    /// The place itself is not included
     fn iterate_over_parents(&self) -> impl Iterator<Item = Place> + '_ {
         (0..self.projection.len())
             .map(|x| &self.projection[0..x])
@@ -367,7 +368,7 @@ pub enum TerminatorKind {
     ///
     /// Only permitted in cleanup blocks. `Resume` is not permitted with `-C unwind=abort` after
     /// deaggregation runs.
-    Resume,
+    UnwindResume,
 
     /// Indicates that the landing pad is finished and that the process should abort.
     ///
@@ -1056,7 +1057,7 @@ impl MirBody {
                     TerminatorKind::FalseEdge { .. }
                     | TerminatorKind::FalseUnwind { .. }
                     | TerminatorKind::Goto { .. }
-                    | TerminatorKind::Resume
+                    | TerminatorKind::UnwindResume
                     | TerminatorKind::GeneratorDrop
                     | TerminatorKind::Abort
                     | TerminatorKind::Return

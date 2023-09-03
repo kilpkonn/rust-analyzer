@@ -15,7 +15,7 @@ use hir_def::{
     path::Path,
     resolver::{resolver_for_expr, HasResolver, ResolveValueResult, ValueNs},
     AdtId, DefWithBodyId, EnumVariantId, GeneralConstId, HasModule, ItemContainerId, LocalFieldId,
-    TraitId, TypeOrConstParamId,
+    Lookup, TraitId, TypeOrConstParamId,
 };
 use hir_expand::name::Name;
 use la_arena::ArenaMap;
@@ -372,7 +372,7 @@ impl<'ctx> MirLowerCtx<'ctx> {
         match &self.body.exprs[expr_id] {
             Expr::Missing => {
                 if let DefWithBodyId::FunctionId(f) = self.owner {
-                    let assoc = self.db.lookup_intern_function(f);
+                    let assoc = f.lookup(self.db.upcast());
                     if let ItemContainerId::TraitId(t) = assoc.container {
                         let name = &self.db.function_data(f).name;
                         return Err(MirLowerError::TraitFunctionDefinition(t, name.clone()));
@@ -486,12 +486,9 @@ impl<'ctx> MirLowerCtx<'ctx> {
                         );
                         Ok(Some(current))
                     }
-                    ValueNs::FunctionId(_) | ValueNs::StructId(_) => {
+                    ValueNs::FunctionId(_) | ValueNs::StructId(_) | ValueNs::ImplSelf(_) => {
                         // It's probably a unit struct or a zero sized function, so no action is needed.
                         Ok(Some(current))
-                    }
-                    it => {
-                        not_supported!("unknown name {it:?} in value name space");
                     }
                 }
             }
@@ -585,36 +582,6 @@ impl<'ctx> MirLowerCtx<'ctx> {
                     Ok(())
                 })
             }
-            Expr::While { condition, body, label } => {
-                self.lower_loop(current, place, *label, expr_id.into(), |this, begin| {
-                    let scope = this.push_drop_scope();
-                    let Some((discr, to_switch)) =
-                        this.lower_expr_to_some_operand(*condition, begin)?
-                    else {
-                        return Ok(());
-                    };
-                    let fail_cond = this.new_basic_block();
-                    let after_cond = this.new_basic_block();
-                    this.set_terminator(
-                        to_switch,
-                        TerminatorKind::SwitchInt {
-                            discr,
-                            targets: SwitchTargets::static_if(1, after_cond, fail_cond),
-                        },
-                        expr_id.into(),
-                    );
-                    let fail_cond = this.drop_until_scope(this.drop_scopes.len() - 1, fail_cond);
-                    let end = this.current_loop_end()?;
-                    this.set_goto(fail_cond, end, expr_id.into());
-                    if let Some((_, block)) = this.lower_expr_as_place(after_cond, *body, true)? {
-                        let block = scope.pop_and_drop(this, block);
-                        this.set_goto(block, begin, expr_id.into());
-                    } else {
-                        scope.pop_assume_dropped(this);
-                    }
-                    Ok(())
-                })
-            }
             Expr::Call { callee, args, .. } => {
                 if let Some((func_id, generic_args)) = self.infer.method_resolution(expr_id) {
                     let ty = chalk_ir::TyKind::FnDef(
@@ -659,6 +626,11 @@ impl<'ctx> MirLowerCtx<'ctx> {
                             self.is_uninhabited(expr_id),
                             expr_id.into(),
                         )
+                    }
+                    TyKind::Closure(_, _) => {
+                        not_supported!(
+                            "method resolution not emitted for closure (Are Fn traits available?)"
+                        );
                     }
                     TyKind::Error => {
                         return Err(MirLowerError::MissingFunctionDefinition(self.owner, expr_id))
@@ -1026,18 +998,7 @@ impl<'ctx> MirLowerCtx<'ctx> {
                         self.push_assignment(current, lhs_place, r_value, expr_id.into());
                         return Ok(Some(current));
                     } else {
-                        let Some((lhs_place, current)) =
-                            self.lower_expr_as_place(current, *lhs, false)?
-                        else {
-                            return Ok(None);
-                        };
-                        let Some((rhs_op, current)) =
-                            self.lower_expr_to_some_operand(*rhs, current)?
-                        else {
-                            return Ok(None);
-                        };
-                        self.push_assignment(current, lhs_place, rhs_op.into(), expr_id.into());
-                        return Ok(Some(current));
+                        return self.lower_assignment(current, *lhs, *rhs, expr_id.into());
                     }
                 }
                 let Some((lhs_op, current)) = self.lower_expr_to_some_operand(*lhs, current)?
@@ -1240,7 +1201,8 @@ impl<'ctx> MirLowerCtx<'ctx> {
                     let Some(values) = elements
                         .iter()
                         .map(|it| {
-                            let Some((o, c)) = self.lower_expr_to_some_operand(*it, current)? else {
+                            let Some((o, c)) = self.lower_expr_to_some_operand(*it, current)?
+                            else {
                                 return Ok(None);
                             };
                             current = c;
@@ -1283,6 +1245,70 @@ impl<'ctx> MirLowerCtx<'ctx> {
         }
     }
 
+    fn lower_destructing_assignment(
+        &mut self,
+        mut current: BasicBlockId,
+        lhs: ExprId,
+        rhs: Place,
+        span: MirSpan,
+    ) -> Result<Option<BasicBlockId>> {
+        match &self.body.exprs[lhs] {
+            Expr::Tuple { exprs, is_assignee_expr: _ } => {
+                for (i, expr) in exprs.iter().enumerate() {
+                    let Some(c) = self.lower_destructing_assignment(
+                        current,
+                        *expr,
+                        rhs.project(ProjectionElem::TupleOrClosureField(i)),
+                        span,
+                    )?
+                    else {
+                        return Ok(None);
+                    };
+                    current = c;
+                }
+                Ok(Some(current))
+            }
+            Expr::Underscore => Ok(Some(current)),
+            _ => {
+                let Some((lhs_place, current)) = self.lower_expr_as_place(current, lhs, false)?
+                else {
+                    return Ok(None);
+                };
+                self.push_assignment(current, lhs_place, Operand::Copy(rhs).into(), span);
+                Ok(Some(current))
+            }
+        }
+    }
+
+    fn lower_assignment(
+        &mut self,
+        current: BasicBlockId,
+        lhs: ExprId,
+        rhs: ExprId,
+        span: MirSpan,
+    ) -> Result<Option<BasicBlockId>> {
+        let Some((rhs_op, current)) = self.lower_expr_to_some_operand(rhs, current)? else {
+            return Ok(None);
+        };
+        if matches!(&self.body.exprs[lhs], Expr::Underscore) {
+            return Ok(Some(current));
+        }
+        if matches!(
+            &self.body.exprs[lhs],
+            Expr::Tuple { .. } | Expr::RecordLit { .. } | Expr::Call { .. }
+        ) {
+            let temp = self.temp(self.expr_ty_after_adjustments(rhs), current, rhs.into())?;
+            let temp = Place::from(temp);
+            self.push_assignment(current, temp.clone(), rhs_op.into(), span);
+            return self.lower_destructing_assignment(current, lhs, temp, span);
+        }
+        let Some((lhs_place, current)) = self.lower_expr_as_place(current, lhs, false)? else {
+            return Ok(None);
+        };
+        self.push_assignment(current, lhs_place, rhs_op.into(), span);
+        Ok(Some(current))
+    }
+
     fn placeholder_subst(&mut self) -> Substitution {
         let placeholder_subst = match self.owner.as_generic_def_id() {
             Some(it) => TyBuilder::placeholder_subst(self.db, it),
@@ -1323,14 +1349,14 @@ impl<'ctx> MirLowerCtx<'ctx> {
                     .resolve_path_in_value_ns(self.db.upcast(), c)
                     .ok_or_else(unresolved_name)?;
                 match pr {
-                    ResolveValueResult::ValueNs(v) => {
+                    ResolveValueResult::ValueNs(v, _) => {
                         if let ValueNs::ConstId(c) = v {
                             self.lower_const_to_operand(Substitution::empty(Interner), c.into(), ty)
                         } else {
                             not_supported!("bad path in range pattern");
                         }
                     }
-                    ResolveValueResult::Partial(_, _) => {
+                    ResolveValueResult::Partial(_, _, _) => {
                         not_supported!("associated constants in range pattern")
                     }
                 }

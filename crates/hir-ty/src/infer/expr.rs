@@ -5,9 +5,7 @@ use std::{
     mem,
 };
 
-use chalk_ir::{
-    cast::Cast, fold::Shift, DebruijnIndex, GenericArgData, Mutability, TyVariableKind,
-};
+use chalk_ir::{cast::Cast, fold::Shift, DebruijnIndex, Mutability, TyVariableKind};
 use hir_def::{
     generics::TypeOrConstParamData,
     hir::{
@@ -46,8 +44,8 @@ use crate::{
 };
 
 use super::{
-    coerce::auto_deref_adjust_steps, find_breakable, BreakableContext, Diverges, Expectation,
-    InferenceContext, InferenceDiagnostic, TypeMismatch,
+    cast::CastCheck, coerce::auto_deref_adjust_steps, find_breakable, BreakableContext, Diverges,
+    Expectation, InferenceContext, InferenceDiagnostic, TypeMismatch,
 };
 
 impl InferenceContext<'_> {
@@ -197,19 +195,6 @@ impl InferenceContext<'_> {
                     }
                     None => self.result.standard_types.never.clone(),
                 }
-            }
-            &Expr::While { condition, body, label } => {
-                self.with_breakable_ctx(BreakableKind::Loop, None, label, |this| {
-                    this.infer_expr(
-                        condition,
-                        &Expectation::HasType(this.result.standard_types.bool_.clone()),
-                    );
-                    this.infer_expr(body, &Expectation::HasType(TyBuilder::unit()));
-                });
-
-                // the body may not run, so it diverging doesn't mean we diverge
-                self.diverges = Diverges::Maybe;
-                TyBuilder::unit()
             }
             Expr::Closure { body, args, ret_type, arg_types, closure_kind, capture_by: _ } => {
                 assert_eq!(args.len(), arg_types.len());
@@ -574,16 +559,8 @@ impl InferenceContext<'_> {
             }
             Expr::Cast { expr, type_ref } => {
                 let cast_ty = self.make_ty(type_ref);
-                // FIXME: propagate the "castable to" expectation
-                let inner_ty = self.infer_expr_no_expect(*expr);
-                match (inner_ty.kind(Interner), cast_ty.kind(Interner)) {
-                    (TyKind::Ref(_, _, inner), TyKind::Raw(_, cast)) => {
-                        // FIXME: record invalid cast diagnostic in case of mismatch
-                        self.unify(inner, cast);
-                    }
-                    // FIXME check the other kinds of cast...
-                    _ => (),
-                }
+                let expr_ty = self.infer_expr(*expr, &Expectation::Castable(cast_ty.clone()));
+                self.deferred_cast_checks.push(CastCheck::new(expr_ty, cast_ty.clone()));
                 cast_ty
             }
             Expr::Ref { expr, rawness, mutability } => {
@@ -771,7 +748,7 @@ impl InferenceContext<'_> {
                     self.resolve_associated_type_with_params(
                         self_ty,
                         self.resolve_ops_index_output(),
-                        &[GenericArgData::Ty(index_ty).intern(Interner)],
+                        &[index_ty.cast(Interner)],
                     )
                 } else {
                     self.err_ty()
@@ -1592,7 +1569,7 @@ impl InferenceContext<'_> {
         output: Ty,
         inputs: Vec<Ty>,
     ) -> Vec<Ty> {
-        if let Some(expected_ty) = expected_output.to_option(&mut self.table) {
+        if let Some(expected_ty) = expected_output.only_has_type(&mut self.table) {
             self.table.fudge_inference(|table| {
                 if table.try_unify(&expected_ty, &output).is_ok() {
                     table.resolve_with_fallback(inputs, &|var, kind, _, _| match kind {
@@ -1742,16 +1719,13 @@ impl InferenceContext<'_> {
         for (id, data) in def_generics.iter().skip(substs.len()) {
             match data {
                 TypeOrConstParamData::TypeParamData(_) => {
-                    substs.push(GenericArgData::Ty(self.table.new_type_var()).intern(Interner))
+                    substs.push(self.table.new_type_var().cast(Interner))
                 }
-                TypeOrConstParamData::ConstParamData(_) => {
-                    substs.push(
-                        GenericArgData::Const(self.table.new_const_var(
-                            self.db.const_param_ty(ConstParamId::from_unchecked(id)),
-                        ))
-                        .intern(Interner),
-                    )
-                }
+                TypeOrConstParamData::ConstParamData(_) => substs.push(
+                    self.table
+                        .new_const_var(self.db.const_param_ty(ConstParamId::from_unchecked(id)))
+                        .cast(Interner),
+                ),
             }
         }
         assert_eq!(substs.len(), total_len);

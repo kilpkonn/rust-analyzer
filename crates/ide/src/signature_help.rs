@@ -4,12 +4,11 @@
 use std::collections::BTreeSet;
 
 use either::Either;
-use hir::{
-    AssocItem, GenericParam, HasAttrs, HirDisplay, ModuleDef, PathResolution, Semantics, Trait,
-};
+use hir::{AssocItem, GenericParam, HirDisplay, ModuleDef, PathResolution, Semantics, Trait};
 use ide_db::{
     active_parameter::{callable_for_node, generic_def_for_node},
     base_db::FilePosition,
+    documentation::{Documentation, HasDocs},
     FxIndexMap,
 };
 use stdx::format_to;
@@ -28,7 +27,7 @@ use crate::RootDatabase;
 /// edited.
 #[derive(Debug)]
 pub struct SignatureHelp {
-    pub doc: Option<String>,
+    pub doc: Option<Documentation>,
     pub signature: String,
     pub active_parameter: Option<usize>,
     parameters: Vec<TextRange>,
@@ -67,17 +66,20 @@ impl SignatureHelp {
 }
 
 /// Computes parameter information for the given position.
-pub(crate) fn signature_help(db: &RootDatabase, position: FilePosition) -> Option<SignatureHelp> {
+pub(crate) fn signature_help(
+    db: &RootDatabase,
+    FilePosition { file_id, offset }: FilePosition,
+) -> Option<SignatureHelp> {
     let sema = Semantics::new(db);
-    let file = sema.parse(position.file_id);
+    let file = sema.parse(file_id);
     let file = file.syntax();
     let token = file
-        .token_at_offset(position.offset)
+        .token_at_offset(offset)
         .left_biased()
         // if the cursor is sandwiched between two space tokens and the call is unclosed
         // this prevents us from leaving the CallExpression
         .and_then(|tok| algo::skip_trivia_token(tok, Direction::Prev))?;
-    let token = sema.descend_into_macros_single(token);
+    let token = sema.descend_into_macros_single(token, offset);
 
     for node in token.parent_ancestors() {
         match_ast! {
@@ -176,7 +178,7 @@ fn signature_help_for_call(
     let mut fn_params = None;
     match callable.kind() {
         hir::CallableKind::Function(func) => {
-            res.doc = func.docs(db).map(|it| it.into());
+            res.doc = func.docs(db);
             format_to!(res.signature, "fn {}", func.name(db).display(db));
             fn_params = Some(match callable.receiver_param(db) {
                 Some(_self) => func.params_without_self(db),
@@ -184,11 +186,11 @@ fn signature_help_for_call(
             });
         }
         hir::CallableKind::TupleStruct(strukt) => {
-            res.doc = strukt.docs(db).map(|it| it.into());
+            res.doc = strukt.docs(db);
             format_to!(res.signature, "struct {}", strukt.name(db).display(db));
         }
         hir::CallableKind::TupleEnumVariant(variant) => {
-            res.doc = variant.docs(db).map(|it| it.into());
+            res.doc = variant.docs(db);
             format_to!(
                 res.signature,
                 "enum {}::{}",
@@ -202,7 +204,7 @@ fn signature_help_for_call(
     res.signature.push('(');
     {
         if let Some((self_param, _)) = callable.receiver_param(db) {
-            format_to!(res.signature, "{}", self_param)
+            format_to!(res.signature, "{}", self_param.display(db))
         }
         let mut buf = String::new();
         for (idx, (pat, ty)) in callable.params(db).into_iter().enumerate() {
@@ -262,38 +264,38 @@ fn signature_help_for_generics(
     let db = sema.db;
     match generics_def {
         hir::GenericDef::Function(it) => {
-            res.doc = it.docs(db).map(|it| it.into());
+            res.doc = it.docs(db);
             format_to!(res.signature, "fn {}", it.name(db).display(db));
         }
         hir::GenericDef::Adt(hir::Adt::Enum(it)) => {
-            res.doc = it.docs(db).map(|it| it.into());
+            res.doc = it.docs(db);
             format_to!(res.signature, "enum {}", it.name(db).display(db));
         }
         hir::GenericDef::Adt(hir::Adt::Struct(it)) => {
-            res.doc = it.docs(db).map(|it| it.into());
+            res.doc = it.docs(db);
             format_to!(res.signature, "struct {}", it.name(db).display(db));
         }
         hir::GenericDef::Adt(hir::Adt::Union(it)) => {
-            res.doc = it.docs(db).map(|it| it.into());
+            res.doc = it.docs(db);
             format_to!(res.signature, "union {}", it.name(db).display(db));
         }
         hir::GenericDef::Trait(it) => {
-            res.doc = it.docs(db).map(|it| it.into());
+            res.doc = it.docs(db);
             format_to!(res.signature, "trait {}", it.name(db).display(db));
         }
         hir::GenericDef::TraitAlias(it) => {
-            res.doc = it.docs(db).map(|it| it.into());
+            res.doc = it.docs(db);
             format_to!(res.signature, "trait {}", it.name(db).display(db));
         }
         hir::GenericDef::TypeAlias(it) => {
-            res.doc = it.docs(db).map(|it| it.into());
+            res.doc = it.docs(db);
             format_to!(res.signature, "type {}", it.name(db).display(db));
         }
         hir::GenericDef::Variant(it) => {
             // In paths, generics of an enum can be specified *after* one of its variants.
             // eg. `None::<u8>`
             // We'll use the signature of the enum, but include the docs of the variant.
-            res.doc = it.docs(db).map(|it| it.into());
+            res.doc = it.docs(db);
             let enum_ = it.parent_enum(db);
             format_to!(res.signature, "enum {}", enum_.name(db).display(db));
             generics_def = enum_.into();
@@ -1310,6 +1312,25 @@ id! {
 "#,
             expect![[r#"
                 fn foo()
+            "#]],
+        );
+    }
+
+    #[test]
+    fn fn_signature_for_method_call_defined_in_macro() {
+        check(
+            r#"
+macro_rules! id { ($($tt:tt)*) => { $($tt)* } }
+struct S;
+id! {
+    impl S {
+        fn foo<'a>(&'a mut self) {}
+    }
+}
+fn test() { S.foo($0); }
+"#,
+            expect![[r#"
+                fn foo(&'a mut self)
             "#]],
         );
     }

@@ -5,8 +5,8 @@ use std::mem;
 use either::Either;
 use hir::{InFile, Semantics};
 use ide_db::{
-    active_parameter::ActiveParameter, base_db::FileId, defs::Definition, rust_doc::is_rust_fence,
-    SymbolKind,
+    active_parameter::ActiveParameter, base_db::FileId, defs::Definition,
+    documentation::docs_with_rangemap, rust_doc::is_rust_fence, SymbolKind,
 };
 use syntax::{
     ast::{self, AstNode, IsString, QuoteOffsets},
@@ -118,7 +118,7 @@ pub(super) fn doc_comment(
     let src_file_id = src_file_id.into();
 
     // Extract intra-doc links and emit highlights for them.
-    if let Some((docs, doc_mapping)) = attributes.docs_with_rangemap(sema.db) {
+    if let Some((docs, doc_mapping)) = docs_with_rangemap(sema.db, &attributes) {
         extract_definitions_from_docs(&docs)
             .into_iter()
             .filter_map(|(range, link, ns)| {
@@ -288,7 +288,7 @@ fn find_doc_string_in_attr(attr: &hir::Attr, it: &ast::Attr) -> Option<ast::Stri
 
 fn module_def_to_hl_tag(def: Definition) -> HlTag {
     let symbol = match def {
-        Definition::Module(_) => SymbolKind::Module,
+        Definition::Module(_) | Definition::ExternCrateDecl(_) => SymbolKind::Module,
         Definition::Function(_) => SymbolKind::Function,
         Definition::Adt(hir::Adt::Struct(_)) => SymbolKind::Struct,
         Definition::Adt(hir::Adt::Enum(_)) => SymbolKind::Enum,

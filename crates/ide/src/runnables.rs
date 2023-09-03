@@ -7,6 +7,7 @@ use ide_assists::utils::test_related_attribute;
 use ide_db::{
     base_db::{FilePosition, FileRange},
     defs::Definition,
+    documentation::docs_from_attrs,
     helpers::visit_file_defs,
     search::SearchScope,
     FxHashMap, FxHashSet, RootDatabase, SymbolKind,
@@ -232,7 +233,7 @@ fn find_related_tests(
     for def in defs {
         let defs = def
             .usages(sema)
-            .set_scope(search_scope.clone())
+            .set_scope(search_scope.as_ref())
             .all()
             .references
             .into_values()
@@ -309,7 +310,7 @@ pub(crate) fn runnable_fn(
 ) -> Option<Runnable> {
     let name = def.name(sema.db).to_smol_str();
 
-    let root = def.module(sema.db).krate().root_module(sema.db);
+    let root = def.module(sema.db).krate().root_module();
 
     let kind = if name == "main" && def.module(sema.db) == root {
         RunnableKind::Bin
@@ -496,7 +497,7 @@ const RUSTDOC_CODE_BLOCK_ATTRIBUTES_RUNNABLE: &[&str] =
     &["", "rust", "should_panic", "edition2015", "edition2018", "edition2021"];
 
 fn has_runnable_doc_test(attrs: &hir::Attrs) -> bool {
-    attrs.docs().map_or(false, |doc| {
+    docs_from_attrs(attrs).map_or(false, |doc| {
         let mut in_code_block = false;
 
         for line in String::from(doc).lines() {

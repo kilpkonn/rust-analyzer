@@ -4,7 +4,10 @@
 use std::cmp;
 
 use chalk_ir::TyKind;
-use hir_def::resolver::HasResolver;
+use hir_def::{
+    builtin_type::{BuiltinInt, BuiltinUint},
+    resolver::HasResolver,
+};
 use hir_expand::mod_path::ModPath;
 
 use super::*;
@@ -36,6 +39,9 @@ impl Evaluator<'_> {
         destination: Interval,
         span: MirSpan,
     ) -> Result<bool> {
+        if self.not_special_fn_cache.borrow().contains(&def) {
+            return Ok(false);
+        }
         let function_data = self.db.function_data(def);
         let is_intrinsic = match &function_data.abi {
             Some(abi) => *abi == Interned::new_str("rust-intrinsic"),
@@ -124,7 +130,114 @@ impl Evaluator<'_> {
             destination.write_from_bytes(self, &result)?;
             return Ok(true);
         }
+        if let ItemContainerId::TraitId(t) = def.lookup(self.db.upcast()).container {
+            if self.db.lang_attr(t.into()) == Some(LangItem::Clone) {
+                let [self_ty] = generic_args.as_slice(Interner) else {
+                    not_supported!("wrong generic arg count for clone");
+                };
+                let Some(self_ty) = self_ty.ty(Interner) else {
+                    not_supported!("wrong generic arg kind for clone");
+                };
+                // Clone has special impls for tuples and function pointers
+                if matches!(
+                    self_ty.kind(Interner),
+                    TyKind::Function(_) | TyKind::Tuple(..) | TyKind::Closure(..)
+                ) {
+                    self.exec_clone(def, args, self_ty.clone(), locals, destination, span)?;
+                    return Ok(true);
+                }
+                // Return early to prevent caching clone as non special fn.
+                return Ok(false);
+            }
+        }
+        self.not_special_fn_cache.borrow_mut().insert(def);
         Ok(false)
+    }
+
+    /// Clone has special impls for tuples and function pointers
+    fn exec_clone(
+        &mut self,
+        def: FunctionId,
+        args: &[IntervalAndTy],
+        self_ty: Ty,
+        locals: &Locals,
+        destination: Interval,
+        span: MirSpan,
+    ) -> Result<()> {
+        match self_ty.kind(Interner) {
+            TyKind::Function(_) => {
+                let [arg] = args else {
+                    not_supported!("wrong arg count for clone");
+                };
+                let addr = Address::from_bytes(arg.get(self)?)?;
+                return destination
+                    .write_from_interval(self, Interval { addr, size: destination.size });
+            }
+            TyKind::Closure(id, subst) => {
+                let [arg] = args else {
+                    not_supported!("wrong arg count for clone");
+                };
+                let addr = Address::from_bytes(arg.get(self)?)?;
+                let (closure_owner, _) = self.db.lookup_intern_closure((*id).into());
+                let infer = self.db.infer(closure_owner);
+                let (captures, _) = infer.closure_info(id);
+                let layout = self.layout(&self_ty)?;
+                let ty_iter = captures.iter().map(|c| c.ty(subst));
+                self.exec_clone_for_fields(ty_iter, layout, addr, def, locals, destination, span)?;
+            }
+            TyKind::Tuple(_, subst) => {
+                let [arg] = args else {
+                    not_supported!("wrong arg count for clone");
+                };
+                let addr = Address::from_bytes(arg.get(self)?)?;
+                let layout = self.layout(&self_ty)?;
+                let ty_iter = subst.iter(Interner).map(|ga| ga.assert_ty_ref(Interner).clone());
+                self.exec_clone_for_fields(ty_iter, layout, addr, def, locals, destination, span)?;
+            }
+            _ => {
+                self.exec_fn_with_args(
+                    def,
+                    args,
+                    Substitution::from1(Interner, self_ty),
+                    locals,
+                    destination,
+                    None,
+                    span,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    fn exec_clone_for_fields(
+        &mut self,
+        ty_iter: impl Iterator<Item = Ty>,
+        layout: Arc<Layout>,
+        addr: Address,
+        def: FunctionId,
+        locals: &Locals,
+        destination: Interval,
+        span: MirSpan,
+    ) -> Result<()> {
+        for (i, ty) in ty_iter.enumerate() {
+            let size = self.layout(&ty)?.size.bytes_usize();
+            let tmp = self.heap_allocate(self.ptr_size(), self.ptr_size())?;
+            let arg = IntervalAndTy {
+                interval: Interval { addr: tmp, size: self.ptr_size() },
+                ty: TyKind::Ref(Mutability::Not, static_lifetime(), ty.clone()).intern(Interner),
+            };
+            let offset = layout.fields.offset(i).bytes_usize();
+            self.write_memory(tmp, &addr.offset(offset).to_bytes())?;
+            self.exec_clone(
+                def,
+                &[arg],
+                ty,
+                locals,
+                destination.slice(offset..offset + size),
+                span,
+            )?;
+        }
+        Ok(())
     }
 
     fn exec_alloc_fn(
@@ -190,21 +303,36 @@ impl Evaluator<'_> {
             BeginPanic => Err(MirEvalError::Panic("<unknown-panic-payload>".to_string())),
             PanicFmt => {
                 let message = (|| {
-                    let resolver = self.db.crate_def_map(self.crate_id).crate_root().resolver(self.db.upcast());
+                    let resolver = self
+                        .db
+                        .crate_def_map(self.crate_id)
+                        .crate_root()
+                        .resolver(self.db.upcast());
                     let Some(format_fn) = resolver.resolve_path_in_value_ns_fully(
                         self.db.upcast(),
-                        &hir_def::path::Path::from_known_path_with_no_generic(ModPath::from_segments(
-                            hir_expand::mod_path::PathKind::Abs,
-                            [name![std], name![fmt], name![format]].into_iter(),
-                        )),
+                        &hir_def::path::Path::from_known_path_with_no_generic(
+                            ModPath::from_segments(
+                                hir_expand::mod_path::PathKind::Abs,
+                                [name![std], name![fmt], name![format]].into_iter(),
+                            ),
+                        ),
                     ) else {
                         not_supported!("std::fmt::format not found");
                     };
-                    let hir_def::resolver::ValueNs::FunctionId(format_fn) = format_fn else { not_supported!("std::fmt::format is not a function") };
-                    let message_string = self.interpret_mir(self.db.mir_body(format_fn.into()).map_err(|e| MirEvalError::MirLowerError(format_fn, e))?, args.map(|x| IntervalOrOwned::Owned(x.clone())))?;
-                    let addr = Address::from_bytes(&message_string[self.ptr_size()..2 * self.ptr_size()])?;
+                    let hir_def::resolver::ValueNs::FunctionId(format_fn) = format_fn else {
+                        not_supported!("std::fmt::format is not a function")
+                    };
+                    let message_string = self.interpret_mir(
+                        self.db
+                            .mir_body(format_fn.into())
+                            .map_err(|e| MirEvalError::MirLowerError(format_fn, e))?,
+                        args.map(|x| IntervalOrOwned::Owned(x.clone())),
+                    )?;
+                    let addr =
+                        Address::from_bytes(&message_string[self.ptr_size()..2 * self.ptr_size()])?;
                     let size = from_bytes!(usize, message_string[2 * self.ptr_size()..]);
-                    Ok(std::string::String::from_utf8_lossy(self.read_memory(addr, size)?).into_owned())
+                    Ok(std::string::String::from_utf8_lossy(self.read_memory(addr, size)?)
+                        .into_owned())
                 })()
                 .unwrap_or_else(|e| format!("Failed to render panic format args: {e:?}"));
                 Err(MirEvalError::Panic(message))
@@ -373,9 +501,7 @@ impl Evaluator<'_> {
             }
             "syscall" => {
                 let Some((id, rest)) = args.split_first() else {
-                    return Err(MirEvalError::TypeError(
-                        "syscall arg1 is not provided",
-                    ));
+                    return Err(MirEvalError::TypeError("syscall arg1 is not provided"));
                 };
                 let id = from_bytes!(i64, id.get(self)?);
                 self.exec_syscall(id, rest, destination, locals, span)
@@ -389,6 +515,38 @@ impl Evaluator<'_> {
                 self.write_memory(set, &[1])?;
                 // return 0 as success
                 self.write_memory_using_ref(destination.addr, destination.size)?.fill(0);
+                Ok(())
+            }
+            "getenv" => {
+                let [name] = args else {
+                    return Err(MirEvalError::TypeError("libc::write args are not provided"));
+                };
+                let mut name_buf = vec![];
+                let name = {
+                    let mut index = Address::from_bytes(name.get(self)?)?;
+                    loop {
+                        let byte = self.read_memory(index, 1)?[0];
+                        index = index.offset(1);
+                        if byte == 0 {
+                            break;
+                        }
+                        name_buf.push(byte);
+                    }
+                    String::from_utf8_lossy(&name_buf)
+                };
+                let value = self.db.crate_graph()[self.crate_id].env.get(&name);
+                match value {
+                    None => {
+                        // Write null as fail
+                        self.write_memory_using_ref(destination.addr, destination.size)?.fill(0);
+                    }
+                    Some(mut value) => {
+                        value.push('\0');
+                        let addr = self.heap_allocate(value.len(), 1)?;
+                        self.write_memory(addr, value.as_bytes())?;
+                        self.write_memory(destination.addr, &addr.to_bytes())?;
+                    }
+                }
                 Ok(())
             }
             _ => not_supported!("unknown external function {as_str}"),
@@ -568,7 +726,8 @@ impl Evaluator<'_> {
         }
         match name {
             "size_of" => {
-                let Some(ty) = generic_args.as_slice(Interner).get(0).and_then(|it| it.ty(Interner))
+                let Some(ty) =
+                    generic_args.as_slice(Interner).get(0).and_then(|it| it.ty(Interner))
                 else {
                     return Err(MirEvalError::TypeError("size_of generic arg is not provided"));
                 };
@@ -576,14 +735,17 @@ impl Evaluator<'_> {
                 destination.write_from_bytes(self, &size.to_le_bytes()[0..destination.size])
             }
             "min_align_of" | "pref_align_of" => {
-                let Some(ty) = generic_args.as_slice(Interner).get(0).and_then(|it| it.ty(Interner)) else {
+                let Some(ty) =
+                    generic_args.as_slice(Interner).get(0).and_then(|it| it.ty(Interner))
+                else {
                     return Err(MirEvalError::TypeError("align_of generic arg is not provided"));
                 };
                 let align = self.layout(ty)?.align.abi.bytes();
                 destination.write_from_bytes(self, &align.to_le_bytes()[0..destination.size])
             }
             "size_of_val" => {
-                let Some(ty) = generic_args.as_slice(Interner).get(0).and_then(|it| it.ty(Interner))
+                let Some(ty) =
+                    generic_args.as_slice(Interner).get(0).and_then(|it| it.ty(Interner))
                 else {
                     return Err(MirEvalError::TypeError("size_of_val generic arg is not provided"));
                 };
@@ -599,8 +761,12 @@ impl Evaluator<'_> {
                 }
             }
             "min_align_of_val" => {
-                let Some(ty) = generic_args.as_slice(Interner).get(0).and_then(|it| it.ty(Interner)) else {
-                    return Err(MirEvalError::TypeError("min_align_of_val generic arg is not provided"));
+                let Some(ty) =
+                    generic_args.as_slice(Interner).get(0).and_then(|it| it.ty(Interner))
+                else {
+                    return Err(MirEvalError::TypeError(
+                        "min_align_of_val generic arg is not provided",
+                    ));
                 };
                 let [arg] = args else {
                     return Err(MirEvalError::TypeError("min_align_of_val args are not provided"));
@@ -614,16 +780,20 @@ impl Evaluator<'_> {
                 }
             }
             "type_name" => {
-                let Some(ty) = generic_args.as_slice(Interner).get(0).and_then(|it| it.ty(Interner))
+                let Some(ty) =
+                    generic_args.as_slice(Interner).get(0).and_then(|it| it.ty(Interner))
                 else {
                     return Err(MirEvalError::TypeError("type_name generic arg is not provided"));
                 };
-                let Ok(ty_name) = ty.display_source_code(
+                let ty_name = match ty.display_source_code(
                     self.db,
                     locals.body.owner.module(self.db.upcast()),
                     true,
-                ) else {
-                    not_supported!("fail in generating type_name using source code display");
+                ) {
+                    Ok(ty_name) => ty_name,
+                    // Fallback to human readable display in case of `Err`. Ideally we want to use `display_source_code` to
+                    // render full paths.
+                    Err(_) => ty.display(self.db).to_string(),
                 };
                 let len = ty_name.len();
                 let addr = self.heap_allocate(len, 1)?;
@@ -634,7 +804,8 @@ impl Evaluator<'_> {
                     .write_from_bytes(self, &len.to_le_bytes())
             }
             "needs_drop" => {
-                let Some(ty) = generic_args.as_slice(Interner).get(0).and_then(|it| it.ty(Interner))
+                let Some(ty) =
+                    generic_args.as_slice(Interner).get(0).and_then(|it| it.ty(Interner))
                 else {
                     return Err(MirEvalError::TypeError("size_of generic arg is not provided"));
                 };
@@ -679,7 +850,25 @@ impl Evaluator<'_> {
                 let ans = lhs.wrapping_add(rhs);
                 destination.write_from_bytes(self, &ans.to_le_bytes()[0..destination.size])
             }
-            "wrapping_sub" | "unchecked_sub" | "ptr_offset_from_unsigned" | "ptr_offset_from" => {
+            "ptr_offset_from_unsigned" | "ptr_offset_from" => {
+                let [lhs, rhs] = args else {
+                    return Err(MirEvalError::TypeError("wrapping_sub args are not provided"));
+                };
+                let lhs = i128::from_le_bytes(pad16(lhs.get(self)?, false));
+                let rhs = i128::from_le_bytes(pad16(rhs.get(self)?, false));
+                let ans = lhs.wrapping_sub(rhs);
+                let Some(ty) =
+                    generic_args.as_slice(Interner).get(0).and_then(|it| it.ty(Interner))
+                else {
+                    return Err(MirEvalError::TypeError(
+                        "ptr_offset_from generic arg is not provided",
+                    ));
+                };
+                let size = self.size_of_sized(ty, locals, "ptr_offset_from arg")? as i128;
+                let ans = ans / size;
+                destination.write_from_bytes(self, &ans.to_le_bytes()[0..destination.size])
+            }
+            "wrapping_sub" | "unchecked_sub" => {
                 let [lhs, rhs] = args else {
                     return Err(MirEvalError::TypeError("wrapping_sub args are not provided"));
                 };
@@ -780,7 +969,8 @@ impl Evaluator<'_> {
                         "copy_nonoverlapping args are not provided",
                     ));
                 };
-                let Some(ty) = generic_args.as_slice(Interner).get(0).and_then(|it| it.ty(Interner))
+                let Some(ty) =
+                    generic_args.as_slice(Interner).get(0).and_then(|it| it.ty(Interner))
                 else {
                     return Err(MirEvalError::TypeError(
                         "copy_nonoverlapping generic arg is not provided",
@@ -799,9 +989,45 @@ impl Evaluator<'_> {
                 let [ptr, offset] = args else {
                     return Err(MirEvalError::TypeError("offset args are not provided"));
                 };
-                let Some(ty) = generic_args.as_slice(Interner).get(0).and_then(|it| it.ty(Interner))
-                else {
-                    return Err(MirEvalError::TypeError("offset generic arg is not provided"));
+                let ty = if name == "offset" {
+                    let Some(ty0) =
+                        generic_args.as_slice(Interner).get(0).and_then(|it| it.ty(Interner))
+                    else {
+                        return Err(MirEvalError::TypeError("offset generic arg is not provided"));
+                    };
+                    let Some(ty1) =
+                        generic_args.as_slice(Interner).get(1).and_then(|it| it.ty(Interner))
+                    else {
+                        return Err(MirEvalError::TypeError("offset generic arg is not provided"));
+                    };
+                    if !matches!(
+                        ty1.as_builtin(),
+                        Some(
+                            BuiltinType::Int(BuiltinInt::Isize)
+                                | BuiltinType::Uint(BuiltinUint::Usize)
+                        )
+                    ) {
+                        return Err(MirEvalError::TypeError(
+                            "offset generic arg is not usize or isize",
+                        ));
+                    }
+                    match ty0.as_raw_ptr() {
+                        Some((ty, _)) => ty,
+                        None => {
+                            return Err(MirEvalError::TypeError(
+                                "offset generic arg is not a raw pointer",
+                            ));
+                        }
+                    }
+                } else {
+                    let Some(ty) =
+                        generic_args.as_slice(Interner).get(0).and_then(|it| it.ty(Interner))
+                    else {
+                        return Err(MirEvalError::TypeError(
+                            "arith_offset generic arg is not provided",
+                        ));
+                    };
+                    ty
                 };
                 let ptr = u128::from_le_bytes(pad16(ptr.get(self)?, false));
                 let offset = u128::from_le_bytes(pad16(offset.get(self)?, false));
@@ -919,7 +1145,8 @@ impl Evaluator<'_> {
                 let [arg] = args else {
                     return Err(MirEvalError::TypeError("discriminant_value arg is not provided"));
                 };
-                let Some(ty) = generic_args.as_slice(Interner).get(0).and_then(|it| it.ty(Interner))
+                let Some(ty) =
+                    generic_args.as_slice(Interner).get(0).and_then(|it| it.ty(Interner))
                 else {
                     return Err(MirEvalError::TypeError(
                         "discriminant_value generic arg is not provided",
@@ -979,11 +1206,10 @@ impl Evaluator<'_> {
                 };
                 let count = from_bytes!(usize, count.get(self)?);
                 let val = from_bytes!(u8, val.get(self)?);
-                let Some(ty) = generic_args.as_slice(Interner).get(0).and_then(|it| it.ty(Interner))
+                let Some(ty) =
+                    generic_args.as_slice(Interner).get(0).and_then(|it| it.ty(Interner))
                 else {
-                    return Err(MirEvalError::TypeError(
-                        "write_bytes generic arg is not provided",
-                    ));
+                    return Err(MirEvalError::TypeError("write_bytes generic arg is not provided"));
                 };
                 let dst = Address::from_bytes(dst.get(self)?)?;
                 let size = self.size_of_sized(ty, locals, "copy_nonoverlapping ptr type")?;
@@ -1057,7 +1283,14 @@ impl Evaluator<'_> {
         _span: MirSpan,
     ) -> Result<()> {
         // We are a single threaded runtime with no UB checking and no optimization, so
-        // we can implement these as normal functions.
+        // we can implement atomic intrinsics as normal functions.
+
+        if name.starts_with("singlethreadfence_") || name.starts_with("fence_") {
+            return Ok(());
+        }
+
+        // The rest of atomic intrinsics have exactly one generic arg
+
         let Some(ty) = generic_args.as_slice(Interner).get(0).and_then(|it| it.ty(Interner)) else {
             return Err(MirEvalError::TypeError("atomic intrinsic generic arg is not provided"));
         };

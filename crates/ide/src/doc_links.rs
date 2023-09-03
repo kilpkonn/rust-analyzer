@@ -16,6 +16,7 @@ use hir::{db::HirDatabase, Adt, AsAssocItem, AssocItem, AssocItemContainer, HasA
 use ide_db::{
     base_db::{CrateOrigin, LangCrateOrigin, ReleaseChannel, SourceDatabase},
     defs::{Definition, NameClass, NameRefClass},
+    documentation::{docs_with_rangemap, Documentation, HasDocs},
     helpers::pick_best_token,
     RootDatabase,
 };
@@ -131,19 +132,19 @@ pub(crate) fn remove_links(markdown: &str) -> String {
 // |===
 pub(crate) fn external_docs(
     db: &RootDatabase,
-    position: &FilePosition,
+    FilePosition { file_id, offset }: FilePosition,
     target_dir: Option<&OsStr>,
     sysroot: Option<&OsStr>,
 ) -> Option<DocumentationLinks> {
     let sema = &Semantics::new(db);
-    let file = sema.parse(position.file_id).syntax().clone();
-    let token = pick_best_token(file.token_at_offset(position.offset), |kind| match kind {
+    let file = sema.parse(file_id).syntax().clone();
+    let token = pick_best_token(file.token_at_offset(offset), |kind| match kind {
         IDENT | INT_NUMBER | T![self] => 3,
         T!['('] | T![')'] => 2,
         kind if kind.is_trivia() => 0,
         _ => 1,
     })?;
-    let token = sema.descend_into_macros_single(token);
+    let token = sema.descend_into_macros_single(token, offset);
 
     let node = token.parent()?;
     let definition = match_ast! {
@@ -152,6 +153,9 @@ pub(crate) fn external_docs(
                 NameRefClass::Definition(def) => def,
                 NameRefClass::FieldShorthand { local_ref: _, field_ref } => {
                     Definition::Field(field_ref)
+                }
+                NameRefClass::ExternCrateShorthand { decl, .. } => {
+                    Definition::ExternCrateDecl(decl)
                 }
             },
             ast::Name(name) => match NameClass::classify(sema, &name)? {
@@ -168,7 +172,7 @@ pub(crate) fn external_docs(
 /// Extracts all links from a given markdown text returning the definition text range, link-text
 /// and the namespace if known.
 pub(crate) fn extract_definitions_from_docs(
-    docs: &hir::Documentation,
+    docs: &Documentation,
 ) -> Vec<(TextRange, String, Option<hir::Namespace>)> {
     Parser::new_with_broken_link_callback(
         docs.as_str(),
@@ -209,6 +213,7 @@ pub(crate) fn resolve_doc_path_for_def(
         Definition::Macro(it) => it.resolve_doc_path(db, link, ns),
         Definition::Field(it) => it.resolve_doc_path(db, link, ns),
         Definition::SelfType(it) => it.resolve_doc_path(db, link, ns),
+        Definition::ExternCrateDecl(it) => it.resolve_doc_path(db, link, ns),
         Definition::BuiltinAttr(_)
         | Definition::ToolModule(_)
         | Definition::BuiltinType(_)
@@ -281,7 +286,7 @@ impl DocCommentToken {
         let original_start = doc_token.text_range().start();
         let relative_comment_offset = offset - original_start - prefix_len;
 
-        sema.descend_into_macros(doc_token).into_iter().find_map(|t| {
+        sema.descend_into_macros(doc_token, offset).into_iter().find_map(|t| {
             let (node, descended_prefix_len) = match_ast! {
                 match t {
                     ast::Comment(comment) => (t.parent()?, TextSize::try_from(comment.prefix().len()).ok()?),
@@ -293,7 +298,7 @@ impl DocCommentToken {
             let abs_in_expansion_offset = token_start + relative_comment_offset + descended_prefix_len;
 
             let (attributes, def) = doc_attributes(sema, &node)?;
-            let (docs, doc_mapping) = attributes.docs_with_rangemap(sema.db)?;
+            let (docs, doc_mapping) = docs_with_rangemap(sema.db, &attributes)?;
             let (in_expansion_range, link, ns) =
                 extract_definitions_from_docs(&docs).into_iter().find_map(|(range, link, ns)| {
                     let mapped = doc_mapping.map(range)?;
@@ -616,6 +621,9 @@ fn filename_and_frag_for_def(
             let (_, file, _) = filename_and_frag_for_def(db, adt)?;
             // FIXME fragment numbering
             return Some((adt, file, Some(String::from("impl"))));
+        }
+        Definition::ExternCrateDecl(it) => {
+            format!("{}/index.html", it.name(db).display(db.upcast()))
         }
         Definition::Local(_)
         | Definition::GenericParam(_)

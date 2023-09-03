@@ -77,6 +77,9 @@ impl<'a> Ctx<'a> {
     }
 
     pub(super) fn lower_block(mut self, block: &ast::BlockExpr) -> ItemTree {
+        self.tree
+            .attrs
+            .insert(AttrOwner::TopLevel, RawAttrs::new(self.db.upcast(), block, self.hygiene()));
         self.tree.top_level = block
             .statements()
             .filter_map(|stmt| match stmt {
@@ -502,13 +505,13 @@ impl<'a> Ctx<'a> {
         Some(id(self.data().impls.alloc(res)))
     }
 
-    fn lower_use(&mut self, use_item: &ast::Use) -> Option<FileItemTreeId<Import>> {
+    fn lower_use(&mut self, use_item: &ast::Use) -> Option<FileItemTreeId<Use>> {
         let visibility = self.lower_visibility(use_item);
         let ast_id = self.source_ast_id_map.ast_id(use_item);
         let (use_tree, _) = lower_use_tree(self.db, self.hygiene(), use_item.use_tree()?)?;
 
-        let res = Import { visibility, ast_id, use_tree };
-        Some(id(self.data().imports.alloc(res)))
+        let res = Use { visibility, ast_id, use_tree };
+        Some(id(self.data().uses.alloc(res)))
     }
 
     fn lower_extern_crate(
@@ -602,7 +605,21 @@ impl<'a> Ctx<'a> {
             generics.fill_bounds(&self.body_ctx, bounds, Either::Left(self_param));
         }
 
-        generics.fill(&self.body_ctx, node);
+        let add_param_attrs = |item, param| {
+            let attrs = RawAttrs::new(self.db.upcast(), &param, self.body_ctx.hygiene());
+            // This is identical to the body of `Ctx::add_attrs()` but we can't call that here
+            // because it requires `&mut self` and the call to `generics.fill()` below also
+            // references `self`.
+            match self.tree.attrs.entry(item) {
+                Entry::Occupied(mut entry) => {
+                    *entry.get_mut() = entry.get().merge(attrs);
+                }
+                Entry::Vacant(entry) => {
+                    entry.insert(attrs);
+                }
+            }
+        };
+        generics.fill(&self.body_ctx, node, add_param_attrs);
 
         generics.shrink_to_fit();
         Interned::new(generics)
@@ -763,7 +780,7 @@ impl UseTreeLowering<'_> {
     }
 }
 
-pub(super) fn lower_use_tree(
+pub(crate) fn lower_use_tree(
     db: &dyn DefDatabase,
     hygiene: &Hygiene,
     tree: ast::UseTree,

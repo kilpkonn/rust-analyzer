@@ -12,6 +12,7 @@
 //! correct. Instead, we try to provide a best-effort service. Even if the
 //! project is currently loading and we don't have a full project model, we
 //! still want to respond to various  requests.
+// FIXME: This is a mess that needs some untangling work
 use std::{iter, mem};
 
 use flycheck::{FlycheckConfig, FlycheckHandle};
@@ -114,6 +115,11 @@ impl GlobalState {
         if self.proc_macro_clients.iter().any(|it| it.is_err()) {
             status.health = lsp_ext::Health::Warning;
             message.push_str("Failed to spawn one or more proc-macro servers.\n\n");
+            for err in self.proc_macro_clients.iter() {
+                if let Err(err) = err {
+                    format_to!(message, "- {err}\n");
+                }
+            }
         }
         if !self.config.cargo_autoreload()
             && self.is_quiescent()

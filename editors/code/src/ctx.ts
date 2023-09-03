@@ -94,6 +94,7 @@ export class Ctx {
     private unlinkedFiles: vscode.Uri[];
     private _dependencies: RustDependenciesProvider | undefined;
     private _treeView: vscode.TreeView<Dependency | DependencyFile | DependencyId> | undefined;
+    private lastStatus: ServerStatusParams | { health: "stopped" } = { health: "stopped" };
 
     get client() {
         return this._client;
@@ -404,7 +405,15 @@ export class Ctx {
     }
 
     setServerStatus(status: ServerStatusParams | { health: "stopped" }) {
+        this.lastStatus = status;
+        this.updateStatusBarItem();
+    }
+    refreshServerStatus() {
+        this.updateStatusBarItem();
+    }
+    private updateStatusBarItem() {
         let icon = "";
+        const status = this.lastStatus;
         const statusBar = this.statusBar;
         statusBar.show();
         statusBar.tooltip = new vscode.MarkdownString("", true);
@@ -414,7 +423,7 @@ export class Ctx {
                 statusBar.tooltip.appendText(status.message ?? "Ready");
                 statusBar.color = undefined;
                 statusBar.backgroundColor = undefined;
-                statusBar.command = "rust-analyzer.stopServer";
+                statusBar.command = "rust-analyzer.openLogs";
                 this.dependencies?.refresh();
                 break;
             case "warning":
@@ -442,16 +451,23 @@ export class Ctx {
                 statusBar.tooltip.appendMarkdown(
                     "\n\n[Start server](command:rust-analyzer.startServer)",
                 );
-                statusBar.color = undefined;
-                statusBar.backgroundColor = undefined;
+                statusBar.color = new vscode.ThemeColor("statusBarItem.warningForeground");
+                statusBar.backgroundColor = new vscode.ThemeColor(
+                    "statusBarItem.warningBackground",
+                );
                 statusBar.command = "rust-analyzer.startServer";
-                statusBar.text = `$(stop-circle) rust-analyzer`;
+                statusBar.text = "$(stop-circle) rust-analyzer";
                 return;
         }
         if (statusBar.tooltip.value) {
-            statusBar.tooltip.appendText("\n\n");
+            statusBar.tooltip.appendMarkdown("\n\n---\n\n");
         }
-        statusBar.tooltip.appendMarkdown("\n\n[Open logs](command:rust-analyzer.openLogs)");
+        statusBar.tooltip.appendMarkdown("\n\n[Open Logs](command:rust-analyzer.openLogs)");
+        statusBar.tooltip.appendMarkdown(
+            `\n\n[${
+                this.config.checkOnSave ? "Disable" : "Enable"
+            } Check on Save](command:rust-analyzer.toggleCheckOnSave)`,
+        );
         statusBar.tooltip.appendMarkdown(
             "\n\n[Reload Workspace](command:rust-analyzer.reloadWorkspace)",
         );

@@ -8,8 +8,8 @@ use stdx::format_to;
 use vfs::{AbsPath, AbsPathBuf};
 
 use crate::{
-    global_state::GlobalStateSnapshot, line_index::PositionEncoding, lsp_ext,
-    to_proto::url_from_abs_path,
+    global_state::GlobalStateSnapshot, line_index::PositionEncoding,
+    lsp::to_proto::url_from_abs_path, lsp_ext,
 };
 
 use super::{DiagnosticsMapConfig, Fix};
@@ -292,6 +292,13 @@ pub(crate) fn map_rust_diagnostic_to_lsp(
 
     let mut source = String::from("rustc");
     let mut code = rd.code.as_ref().map(|c| c.code.clone());
+
+    if let Some(code_val) = &code {
+        if config.check_ignore.contains(code_val) {
+            return Vec::new();
+        }
+    }
+
     if let Some(code_val) = &code {
         // See if this is an RFC #2103 scoped lint (e.g. from Clippy)
         let scoped_code: Vec<&str> = code_val.split("::").collect();

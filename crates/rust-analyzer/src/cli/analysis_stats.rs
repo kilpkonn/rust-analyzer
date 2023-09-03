@@ -128,7 +128,7 @@ impl flags::AnalysisStats {
         let mut visited_modules = FxHashSet::default();
         let mut visit_queue = Vec::new();
         for krate in krates {
-            let module = krate.root_module(db);
+            let module = krate.root_module();
             let file_id = module.definition_source_file_id(db);
             let file_id = file_id.original_file(db);
             let source_root = db.file_source_root(file_id);
@@ -239,9 +239,7 @@ impl flags::AnalysisStats {
         if let Some(instructions) = total_span.instructions {
             report_metric("total instructions", instructions, "#instr");
         }
-        if let Some(memory) = total_span.memory {
-            report_metric("total memory", memory.allocated.megabytes() as u64, "MB");
-        }
+        report_metric("total memory", total_span.memory.allocated.megabytes() as u64, "MB");
 
         if env::var("RA_COUNT").is_ok() {
             eprintln!("{}", profile::countme::get_all());
@@ -261,7 +259,7 @@ impl flags::AnalysisStats {
             eprintln!("source files: {total_file_size}, macro files: {total_macro_file_size}");
         }
 
-        if self.memory_usage && verbosity.is_verbose() {
+        if verbosity.is_verbose() {
             print_memory_usage(host, vfs);
         }
 
@@ -402,7 +400,8 @@ impl flags::AnalysisStats {
                     let actual_insert = {
                         let source_change = assist.source_change.as_ref().unwrap();
                         assert!(source_change.source_file_edits.values().len() == 1);
-                        let edit = source_change.source_file_edits.values().next().unwrap();
+                        let (edit, _snippet_edit) =
+                            source_change.source_file_edits.values().next().unwrap();
                         let indel = edit.iter().next().unwrap();
                         indel.insert.clone()
                     };
@@ -941,7 +940,7 @@ impl flags::AnalysisStats {
     }
 
     fn stop_watch(&self) -> StopWatch {
-        StopWatch::start().memory(self.memory_usage)
+        StopWatch::start()
     }
 }
 

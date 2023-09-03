@@ -74,7 +74,7 @@ pub(crate) fn find_all_refs(
                 }
             });
             let mut usages =
-                def.usages(sema).set_scope(search_scope.clone()).include_self_refs().all();
+                def.usages(sema).set_scope(search_scope.as_ref()).include_self_refs().all();
 
             if literal_search {
                 retain_adt_literal_usages(&mut usages, def, sema);
@@ -126,7 +126,7 @@ pub(crate) fn find_defs<'a>(
         )
     });
     token.map(|token| {
-        sema.descend_into_macros_with_same_text(token)
+        sema.descend_into_macros_with_same_text(token, offset)
             .into_iter()
             .filter_map(|it| ast::NameLike::cast(it.parent()?))
             .filter_map(move |name_like| {
@@ -136,6 +136,9 @@ pub(crate) fn find_defs<'a>(
                             NameRefClass::Definition(def) => def,
                             NameRefClass::FieldShorthand { local_ref, field_ref: _ } => {
                                 Definition::Local(local_ref)
+                            }
+                            NameRefClass::ExternCrateShorthand { decl, .. } => {
+                                Definition::ExternCrateDecl(decl)
                             }
                         }
                     }

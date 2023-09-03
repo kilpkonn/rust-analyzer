@@ -172,7 +172,7 @@ impl SourceFile {
 }
 
 impl ast::TokenTree {
-    pub fn reparse_as_expr(self) -> Parse<ast::Expr> {
+    pub fn reparse_as_comma_separated_expr(self) -> Parse<ast::MacroEagerInput> {
         let tokens = self.syntax().descendants_with_tokens().filter_map(NodeOrToken::into_token);
 
         let mut parser_input = parser::Input::default();
@@ -195,15 +195,20 @@ impl ast::TokenTree {
                     // Tag the token as joint if it is float with a fractional part
                     // we use this jointness to inform the parser about what token split
                     // event to emit when we encounter a float literal in a field access
-                    if kind == SyntaxKind::FLOAT_NUMBER && !t.text().ends_with('.') {
-                        parser_input.was_joint();
+                    if kind == SyntaxKind::FLOAT_NUMBER {
+                        if !t.text().ends_with('.') {
+                            parser_input.was_joint();
+                        } else {
+                            was_joint = false;
+                        }
+                    } else {
+                        was_joint = true;
                     }
                 }
-                was_joint = true;
             }
         }
 
-        let parser_output = parser::TopEntryPoint::Expr.parse(&parser_input);
+        let parser_output = parser::TopEntryPoint::MacroEagerInput.parse(&parser_input);
 
         let mut tokens =
             self.syntax().descendants_with_tokens().filter_map(NodeOrToken::into_token);
@@ -250,6 +255,7 @@ impl ast::TokenTree {
                             if has_pseudo_dot {
                                 assert!(right.is_empty(), "{left}.{right}");
                             } else {
+                                assert!(!right.is_empty(), "{left}.{right}");
                                 builder.start_node(SyntaxKind::NAME_REF);
                                 builder.token(SyntaxKind::INT_NUMBER, right);
                                 builder.finish_node();

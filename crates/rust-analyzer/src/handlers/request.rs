@@ -36,15 +36,17 @@ use crate::{
     cargo_target_spec::CargoTargetSpec,
     config::{Config, RustfmtConfig, WorkspaceSymbolConfig},
     diff::diff,
-    from_proto,
     global_state::{GlobalState, GlobalStateSnapshot},
     line_index::LineEndings,
+    lsp::{
+        from_proto, to_proto,
+        utils::{all_edits_are_disjoint, invalid_params_error},
+        LspError,
+    },
     lsp_ext::{
         self, CrateInfoResult, ExternalDocsPair, ExternalDocsResponse, FetchDependencyListParams,
         FetchDependencyListResult, PositionOrRange, ViewCrateGraphParams, WorkspaceSymbolParams,
     },
-    lsp_utils::{all_edits_are_disjoint, invalid_params_error},
-    to_proto, LspError,
 };
 
 pub(crate) fn handle_workspace_reload(state: &mut GlobalState, _: ()) -> anyhow::Result<()> {
@@ -353,7 +355,8 @@ pub(crate) fn handle_on_type_formatting(
     };
 
     // This should be a single-file edit
-    let (_, text_edit) = edit.source_file_edits.into_iter().next().unwrap();
+    let (_, (text_edit, snippet_edit)) = edit.source_file_edits.into_iter().next().unwrap();
+    stdx::never!(snippet_edit.is_none(), "on type formatting shouldn't use structured snippets");
 
     let change = to_proto::snippet_text_edit_vec(&line_index, edit.is_snippet, text_edit);
     Ok(Some(change))
@@ -1568,18 +1571,21 @@ pub(crate) fn handle_semantic_tokens_full_delta(
         snap.config.highlighting_non_standard_tokens(),
     );
 
-    let mut cache = snap.semantic_tokens_cache.lock();
-    let cached_tokens = cache.entry(params.text_document.uri).or_default();
+    let cached_tokens = snap.semantic_tokens_cache.lock().remove(&params.text_document.uri);
 
-    if let Some(prev_id) = &cached_tokens.result_id {
+    if let Some(cached_tokens @ lsp_types::SemanticTokens { result_id: Some(prev_id), .. }) =
+        &cached_tokens
+    {
         if *prev_id == params.previous_result_id {
             let delta = to_proto::semantic_token_delta(cached_tokens, &semantic_tokens);
-            *cached_tokens = semantic_tokens;
+            snap.semantic_tokens_cache.lock().insert(params.text_document.uri, semantic_tokens);
             return Ok(Some(delta.into()));
         }
     }
 
-    *cached_tokens = semantic_tokens.clone();
+    // Clone first to keep the lock short
+    let semantic_tokens_clone = semantic_tokens.clone();
+    snap.semantic_tokens_cache.lock().insert(params.text_document.uri, semantic_tokens_clone);
 
     Ok(Some(semantic_tokens.into()))
 }
@@ -1878,12 +1884,15 @@ fn run_rustfmt(
 
     // Determine the edition of the crate the file belongs to (if there's multiple, we pick the
     // highest edition).
-    let editions = snap
+    let Ok(editions) = snap
         .analysis
         .relevant_crates_for(file_id)?
         .into_iter()
         .map(|crate_id| snap.analysis.crate_edition(crate_id))
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect::<Result<Vec<_>, _>>()
+    else {
+        return Ok(None);
+    };
     let edition = editions.iter().copied().max();
 
     let line_index = snap.file_line_index(file_id)?;

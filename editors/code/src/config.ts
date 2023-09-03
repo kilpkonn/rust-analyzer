@@ -6,10 +6,12 @@ import type { Env } from "./client";
 import { log } from "./util";
 import { expectNotUndefined, unwrapUndefinable } from "./undefinable";
 
-export type RunnableEnvCfg =
-    | undefined
-    | Record<string, string>
-    | { mask?: string; env: Record<string, string> }[];
+export type RunnableEnvCfgItem = {
+    mask?: string;
+    env: Record<string, string>;
+    platform?: string | string[];
+};
+export type RunnableEnvCfg = undefined | Record<string, string> | RunnableEnvCfgItem[];
 
 export class Config {
     readonly extensionId = "rust-lang.rust-analyzer";
@@ -214,6 +216,39 @@ export class Config {
             ),
         );
     }
+    get checkOnSave() {
+        return this.get<boolean>("checkOnSave") ?? false;
+    }
+    async toggleCheckOnSave() {
+        const config = this.cfg.inspect<boolean>("checkOnSave") ?? { key: "checkOnSave" };
+        let overrideInLanguage;
+        let target;
+        let value;
+        if (
+            config.workspaceFolderValue !== undefined ||
+            config.workspaceFolderLanguageValue !== undefined
+        ) {
+            target = vscode.ConfigurationTarget.WorkspaceFolder;
+            overrideInLanguage = config.workspaceFolderLanguageValue;
+            value = config.workspaceFolderValue || config.workspaceFolderLanguageValue;
+        } else if (
+            config.workspaceValue !== undefined ||
+            config.workspaceLanguageValue !== undefined
+        ) {
+            target = vscode.ConfigurationTarget.Workspace;
+            overrideInLanguage = config.workspaceLanguageValue;
+            value = config.workspaceValue || config.workspaceLanguageValue;
+        } else if (config.globalValue !== undefined || config.globalLanguageValue !== undefined) {
+            target = vscode.ConfigurationTarget.Global;
+            overrideInLanguage = config.globalLanguageValue;
+            value = config.globalValue || config.globalLanguageValue;
+        } else if (config.defaultValue !== undefined || config.defaultLanguageValue !== undefined) {
+            overrideInLanguage = config.defaultLanguageValue;
+            value = config.defaultValue || config.defaultLanguageValue;
+        }
+        await this.cfg.update("checkOnSave", !(value || false), target || null, overrideInLanguage);
+    }
+
     get traceExtension() {
         return this.get<boolean>("trace.extension");
     }

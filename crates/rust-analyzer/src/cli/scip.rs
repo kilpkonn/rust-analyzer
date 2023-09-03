@@ -51,7 +51,7 @@ impl flags::Scip {
             version: scip_types::ProtocolVersion::UnspecifiedProtocolVersion.into(),
             tool_info: Some(scip_types::ToolInfo {
                 name: "rust-analyzer".to_owned(),
-                version: "0.1".to_owned(),
+                version: format!("{}", crate::version::version()),
                 arguments: vec![],
                 special_fields: Default::default(),
             })
@@ -413,6 +413,44 @@ pub mod module {
     }
     "#,
             "rust-analyzer cargo foo 0.1.0 St#a.",
+        );
+    }
+
+    #[test]
+    fn symbol_for_param() {
+        check_symbol(
+            r#"
+//- /lib.rs crate:main deps:foo
+use foo::example_mod::func;
+fn main() {
+    func(42);
+}
+//- /foo/lib.rs crate:foo@0.1.0,https://a.b/foo.git library
+pub mod example_mod {
+    pub fn func(x$0: usize) {}
+}
+"#,
+            "rust-analyzer cargo foo 0.1.0 example_mod/func().(x)",
+        );
+    }
+
+    #[test]
+    fn symbol_for_closure_param() {
+        check_symbol(
+            r#"
+//- /lib.rs crate:main deps:foo
+use foo::example_mod::func;
+fn main() {
+    func();
+}
+//- /foo/lib.rs crate:foo@0.1.0,https://a.b/foo.git library
+pub mod example_mod {
+    pub fn func() {
+        let f = |x$0: usize| {};
+    }
+}
+"#,
+            "rust-analyzer cargo foo 0.1.0 example_mod/func().(x)",
         );
     }
 

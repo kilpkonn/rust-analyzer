@@ -3,7 +3,10 @@ use syntax::ast::{self, make, AstNode};
 
 use crate::{
     assist_context::{AssistContext, Assists},
-    utils::{add_trait_assoc_items_to_impl, filter_assoc_items, gen_trait_fn_body, DefaultMethods},
+    utils::{
+        add_trait_assoc_items_to_impl, filter_assoc_items, gen_trait_fn_body, DefaultMethods,
+        IgnoreAssocItems,
+    },
     AssistId, AssistKind,
 };
 
@@ -43,6 +46,7 @@ pub(crate) fn add_missing_impl_members(acc: &mut Assists, ctx: &AssistContext<'_
         acc,
         ctx,
         DefaultMethods::No,
+        IgnoreAssocItems::DocHiddenAttrPresent,
         "add_impl_missing_members",
         "Implement missing members",
     )
@@ -87,6 +91,7 @@ pub(crate) fn add_missing_default_members(
         acc,
         ctx,
         DefaultMethods::Only,
+        IgnoreAssocItems::DocHiddenAttrPresent,
         "add_impl_default_members",
         "Implement default members",
     )
@@ -96,6 +101,7 @@ fn add_missing_impl_members_inner(
     acc: &mut Assists,
     ctx: &AssistContext<'_>,
     mode: DefaultMethods,
+    ignore_items: IgnoreAssocItems,
     assist_id: &'static str,
     label: &'static str,
 ) -> Option<()> {
@@ -115,10 +121,21 @@ fn add_missing_impl_members_inner(
     let trait_ref = impl_.trait_ref(ctx.db())?;
     let trait_ = trait_ref.trait_();
 
+    let mut ign_item = ignore_items;
+
+    if let IgnoreAssocItems::DocHiddenAttrPresent = ignore_items {
+        // Relax condition for local crates.
+        let db = ctx.db();
+        if trait_.module(db).krate().origin(db).is_local() {
+            ign_item = IgnoreAssocItems::No;
+        }
+    }
+
     let missing_items = filter_assoc_items(
         &ctx.sema,
         &ide_db::traits::get_missing_assoc_items(&ctx.sema, &impl_def),
         mode,
+        ign_item,
     );
 
     if missing_items.is_empty() {
@@ -405,7 +422,7 @@ impl<'x, 'y, T, V, U: Default> Trait<'x, 'y, T, V, U> for () {
         check_assist(
             add_missing_default_members,
             r#"
-struct Bar<const: N: bool> {
+struct Bar<const N: usize> {
     bar: [i32, N]
 }
 
@@ -422,7 +439,7 @@ impl<const X: usize, Y, Z> Foo<X, Z> for S<Y> {
     $0
 }"#,
             r#"
-struct Bar<const: N: bool> {
+struct Bar<const N: usize> {
     bar: [i32, N]
 }
 
@@ -462,6 +479,107 @@ trait Foo<const N: usize, const M: usize, T> {
 
 impl<X> Foo<42, {20 + 22}, X> for () {
     $0fn get_sum(&self, arg: &X) -> usize { 42 + {20 + 22} }
+}"#,
+        )
+    }
+
+    #[test]
+    fn test_const_substitution_with_defaults() {
+        check_assist(
+            add_missing_default_members,
+            r#"
+trait Foo<T, const N: usize = 42, const M: bool = false, const P: char = 'a'> {
+    fn get_n(&self) -> usize { N }
+    fn get_m(&self) -> bool { M }
+    fn get_p(&self) -> char { P }
+    fn get_array(&self, arg: &T) -> [bool; N] { [M; N] }
+}
+
+impl<X> Foo<X> for () {
+    $0
+}"#,
+            r#"
+trait Foo<T, const N: usize = 42, const M: bool = false, const P: char = 'a'> {
+    fn get_n(&self) -> usize { N }
+    fn get_m(&self) -> bool { M }
+    fn get_p(&self) -> char { P }
+    fn get_array(&self, arg: &T) -> [bool; N] { [M; N] }
+}
+
+impl<X> Foo<X> for () {
+    $0fn get_n(&self) -> usize { 42 }
+
+    fn get_m(&self) -> bool { false }
+
+    fn get_p(&self) -> char { 'a' }
+
+    fn get_array(&self, arg: &X) -> [bool; 42] { [false; 42] }
+}"#,
+        );
+    }
+
+    #[test]
+    fn test_const_substitution_with_defaults_2() {
+        check_assist(
+            add_missing_impl_members,
+            r#"
+mod m {
+    pub const LEN: usize = 42;
+    pub trait Foo<const M: usize = LEN, const N: usize = M, T = [bool; N]> {
+        fn get_t(&self) -> T;
+    }
+}
+
+impl m::Foo for () {
+    $0
+}"#,
+            r#"
+mod m {
+    pub const LEN: usize = 42;
+    pub trait Foo<const M: usize = LEN, const N: usize = M, T = [bool; N]> {
+        fn get_t(&self) -> T;
+    }
+}
+
+impl m::Foo for () {
+    fn get_t(&self) -> [bool; m::LEN] {
+        ${0:todo!()}
+    }
+}"#,
+        )
+    }
+
+    #[test]
+    fn test_const_substitution_with_defaults_3() {
+        check_assist(
+            add_missing_default_members,
+            r#"
+mod m {
+    pub const VAL: usize = 0;
+
+    pub trait Foo<const N: usize = {40 + 2}, const M: usize = {VAL + 1}> {
+        fn get_n(&self) -> usize { N }
+        fn get_m(&self) -> usize { M }
+    }
+}
+
+impl m::Foo for () {
+    $0
+}"#,
+            r#"
+mod m {
+    pub const VAL: usize = 0;
+
+    pub trait Foo<const N: usize = {40 + 2}, const M: usize = {VAL + 1}> {
+        fn get_n(&self) -> usize { N }
+        fn get_m(&self) -> usize { M }
+    }
+}
+
+impl m::Foo for () {
+    $0fn get_n(&self) -> usize { {40 + 2} }
+
+    fn get_m(&self) -> usize { {m::VAL + 1} }
 }"#,
         )
     }
@@ -1965,5 +2083,170 @@ impl AnotherTrait<i32> for () {
 }
 "#,
         );
+    }
+
+    #[test]
+    fn doc_hidden_default_impls_ignored() {
+        // doc(hidden) attr is ignored trait and impl both belong to the local crate.
+        check_assist(
+            add_missing_default_members,
+            r#"
+struct Foo;
+trait Trait {
+    #[doc(hidden)]
+    fn func_with_default_impl() -> u32 {
+        42
+    }
+    fn another_default_impl() -> u32 {
+        43
+    }
+}
+impl Tra$0it for Foo {}"#,
+            r#"
+struct Foo;
+trait Trait {
+    #[doc(hidden)]
+    fn func_with_default_impl() -> u32 {
+        42
+    }
+    fn another_default_impl() -> u32 {
+        43
+    }
+}
+impl Trait for Foo {
+    $0fn func_with_default_impl() -> u32 {
+        42
+    }
+
+    fn another_default_impl() -> u32 {
+        43
+    }
+}"#,
+        )
+    }
+
+    #[test]
+    fn doc_hidden_default_impls_lang_crates() {
+        // Not applicable because Eq has a single method and this has a #[doc(hidden)] attr set.
+        check_assist_not_applicable(
+            add_missing_default_members,
+            r#"
+//- minicore: eq
+use core::cmp::Eq;
+struct Foo;
+impl E$0q for Foo { /* $0 */ }
+"#,
+        )
+    }
+
+    #[test]
+    fn doc_hidden_default_impls_lib_crates() {
+        check_assist(
+            add_missing_default_members,
+            r#"
+    //- /main.rs crate:a deps:b
+    struct B;
+    impl b::Exte$0rnTrait for B {}
+    //- /lib.rs crate:b new_source_root:library
+    pub trait ExternTrait {
+        #[doc(hidden)]
+        fn hidden_default() -> Option<()> {
+            todo!()
+        }
+
+        fn unhidden_default() -> Option<()> {
+            todo!()
+        }
+
+        fn unhidden_nondefault() -> Option<()>;
+    }
+                "#,
+            r#"
+    struct B;
+    impl b::ExternTrait for B {
+        $0fn unhidden_default() -> Option<()> {
+            todo!()
+        }
+    }
+    "#,
+        )
+    }
+
+    #[test]
+    fn doc_hidden_default_impls_local_crates() {
+        check_assist(
+            add_missing_default_members,
+            r#"
+trait LocalTrait {
+    #[doc(hidden)]
+    fn no_skip_default() -> Option<()> {
+        todo!()
+    }
+    fn no_skip_default_2() -> Option<()> {
+        todo!()
+    }
+}
+
+struct B;
+impl Loc$0alTrait for B {}
+            "#,
+            r#"
+trait LocalTrait {
+    #[doc(hidden)]
+    fn no_skip_default() -> Option<()> {
+        todo!()
+    }
+    fn no_skip_default_2() -> Option<()> {
+        todo!()
+    }
+}
+
+struct B;
+impl LocalTrait for B {
+    $0fn no_skip_default() -> Option<()> {
+        todo!()
+    }
+
+    fn no_skip_default_2() -> Option<()> {
+        todo!()
+    }
+}
+            "#,
+        )
+    }
+
+    #[test]
+    fn doc_hidden_default_impls_workspace_crates() {
+        check_assist(
+            add_missing_default_members,
+            r#"
+//- /lib.rs crate:b new_source_root:local
+trait LocalTrait {
+    #[doc(hidden)]
+    fn no_skip_default() -> Option<()> {
+        todo!()
+    }
+    fn no_skip_default_2() -> Option<()> {
+        todo!()
+    }
+}
+
+//- /main.rs crate:a deps:b
+struct B;
+impl b::Loc$0alTrait for B {}
+            "#,
+            r#"
+struct B;
+impl b::LocalTrait for B {
+    $0fn no_skip_default() -> Option<()> {
+        todo!()
+    }
+
+    fn no_skip_default_2() -> Option<()> {
+        todo!()
+    }
+}
+            "#,
+        )
     }
 }

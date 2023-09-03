@@ -48,22 +48,15 @@ use crate::{
 };
 
 pub trait HirWrite: fmt::Write {
-    fn start_location_link(&mut self, location: ModuleDefId);
-    fn end_location_link(&mut self);
+    fn start_location_link(&mut self, _location: ModuleDefId) {}
+    fn end_location_link(&mut self) {}
 }
 
 // String will ignore link metadata
-impl HirWrite for String {
-    fn start_location_link(&mut self, _: ModuleDefId) {}
-
-    fn end_location_link(&mut self) {}
-}
+impl HirWrite for String {}
 
 // `core::Formatter` will ignore metadata
-impl HirWrite for fmt::Formatter<'_> {
-    fn start_location_link(&mut self, _: ModuleDefId) {}
-    fn end_location_link(&mut self) {}
-}
+impl HirWrite for fmt::Formatter<'_> {}
 
 pub struct HirFormatter<'a> {
     pub db: &'a dyn HirDatabase,
@@ -885,6 +878,13 @@ impl HirDisplay for Ty {
             TyKind::FnDef(def, parameters) => {
                 let def = from_chalk(db, *def);
                 let sig = db.callable_item_signature(def).substitute(Interner, parameters);
+
+                if f.display_target.is_source_code() {
+                    // `FnDef` is anonymous and there's no surface syntax for it. Show it as a
+                    // function pointer type.
+                    return sig.hir_fmt(f);
+                }
+
                 f.start_location_link(def.into());
                 match def {
                     CallableDefId::FunctionId(ff) => {
@@ -1809,6 +1809,25 @@ impl HirDisplay for Path {
             }
         }
 
+        // Convert trait's `Self` bound back to the surface syntax. Note there is no associated
+        // trait, so there can only be one path segment that `has_self_type`. The `Self` type
+        // itself can contain further qualified path through, which will be handled by recursive
+        // `hir_fmt`s.
+        //
+        // `trait_mod::Trait<Self = type_mod::Type, Args>::Assoc`
+        // =>
+        // `<type_mod::Type as trait_mod::Trait<Args>>::Assoc`
+        let trait_self_ty = self.segments().iter().find_map(|seg| {
+            let generic_args = seg.args_and_bindings?;
+            generic_args.has_self_type.then(|| &generic_args.args[0])
+        });
+        if let Some(ty) = trait_self_ty {
+            write!(f, "<")?;
+            ty.hir_fmt(f)?;
+            write!(f, " as ")?;
+            // Now format the path of the trait...
+        }
+
         for (seg_idx, segment) in self.segments().iter().enumerate() {
             if !matches!(self.kind(), PathKind::Plain) || seg_idx > 0 {
                 write!(f, "::")?;
@@ -1840,15 +1859,12 @@ impl HirDisplay for Path {
                     return Ok(());
                 }
 
-                write!(f, "<")?;
                 let mut first = true;
-                for arg in generic_args.args.iter() {
+                // Skip the `Self` bound if exists. It's handled outside the loop.
+                for arg in &generic_args.args[generic_args.has_self_type as usize..] {
                     if first {
                         first = false;
-                        if generic_args.has_self_type {
-                            // FIXME: Convert to `<Ty as Trait>` form.
-                            write!(f, "Self = ")?;
-                        }
+                        write!(f, "<")?;
                     } else {
                         write!(f, ", ")?;
                     }
@@ -1857,6 +1873,7 @@ impl HirDisplay for Path {
                 for binding in generic_args.bindings.iter() {
                     if first {
                         first = false;
+                        write!(f, "<")?;
                     } else {
                         write!(f, ", ")?;
                     }
@@ -1872,9 +1889,20 @@ impl HirDisplay for Path {
                         }
                     }
                 }
-                write!(f, ">")?;
+
+                // There may be no generic arguments to print, in case of a trait having only a
+                // single `Self` bound which is converted to `<Ty as Trait>::Assoc`.
+                if !first {
+                    write!(f, ">")?;
+                }
+
+                // Current position: `<Ty as Trait<Args>|`
+                if generic_args.has_self_type {
+                    write!(f, ">")?;
+                }
             }
         }
+
         Ok(())
     }
 }

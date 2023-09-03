@@ -3,12 +3,13 @@ use std::fmt::Display;
 
 use either::Either;
 use hir::{
-    Adt, AsAssocItem, AttributeTemplate, CaptureKind, HasAttrs, HasSource, HirDisplay, Layout,
-    LayoutError, Semantics, TypeInfo,
+    Adt, AsAssocItem, AttributeTemplate, CaptureKind, HasSource, HirDisplay, Layout, LayoutError,
+    Semantics, TypeInfo,
 };
 use ide_db::{
     base_db::SourceDatabase,
     defs::Definition,
+    documentation::{Documentation, HasDocs},
     famous_defs::FamousDefs,
     generated::lints::{CLIPPY_LINTS, DEFAULT_LINTS, FEATURES},
     syntax_helpers::insert_whitespace_into_node,
@@ -257,7 +258,7 @@ pub(super) fn keyword(
     let KeywordHint { description, keyword_mod, actions } = keyword_hints(sema, token, parent);
 
     let doc_owner = find_std_module(&famous_defs, &keyword_mod)?;
-    let docs = doc_owner.attrs(sema.db).docs()?;
+    let docs = doc_owner.docs(sema.db)?;
     let markup = process_markup(
         sema.db,
         Definition::Module(doc_owner),
@@ -470,8 +471,9 @@ pub(super) fn definition(
         Definition::SelfType(impl_def) => {
             impl_def.self_ty(db).as_adt().map(|adt| label_and_docs(db, adt))?
         }
-        Definition::GenericParam(it) => label_and_docs(db, it),
+        Definition::GenericParam(it) => (it.display(db).to_string(), None),
         Definition::Label(it) => return Some(Markup::fenced_block(&it.name(db).display(db))),
+        Definition::ExternCrateDecl(it) => label_and_docs(db, it),
         // FIXME: We should be able to show more info about these
         Definition::BuiltinAttr(it) => return render_builtin_attr(db, it),
         Definition::ToolModule(it) => return Some(Markup::fenced_block(&it.name(db))),
@@ -615,12 +617,12 @@ fn render_builtin_attr(db: &RootDatabase, attr: hir::BuiltinAttr) -> Option<Mark
     markup(Some(docs.replace('*', "\\*")), desc, None)
 }
 
-fn label_and_docs<D>(db: &RootDatabase, def: D) -> (String, Option<hir::Documentation>)
+fn label_and_docs<D>(db: &RootDatabase, def: D) -> (String, Option<Documentation>)
 where
-    D: HasAttrs + HirDisplay,
+    D: HasDocs + HirDisplay,
 {
     let label = def.display(db).to_string();
-    let docs = def.attrs(db).docs();
+    let docs = def.docs(db);
     (label, docs)
 }
 
@@ -630,9 +632,9 @@ fn label_and_layout_info_and_docs<D, E, E2>(
     config: &HoverConfig,
     layout_extractor: E,
     layout_offset_extractor: E2,
-) -> (String, Option<hir::Documentation>)
+) -> (String, Option<Documentation>)
 where
-    D: HasAttrs + HirDisplay,
+    D: HasDocs + HirDisplay,
     E: Fn(&D) -> Result<Layout, LayoutError>,
     E2: Fn(&Layout) -> Option<u64>,
 {
@@ -645,7 +647,7 @@ where
     ) {
         format_to!(label, "{layout}");
     }
-    let docs = def.attrs(db).docs();
+    let docs = def.docs(db);
     (label, docs)
 }
 
@@ -656,9 +658,9 @@ fn label_value_and_layout_info_and_docs<D, E, E2, E3, V>(
     value_extractor: E,
     layout_extractor: E2,
     layout_tag_extractor: E3,
-) -> (String, Option<hir::Documentation>)
+) -> (String, Option<Documentation>)
 where
-    D: HasAttrs + HirDisplay,
+    D: HasDocs + HirDisplay,
     E: Fn(&D) -> Option<V>,
     E2: Fn(&D) -> Result<Layout, LayoutError>,
     E3: Fn(&Layout) -> Option<usize>,
@@ -677,7 +679,7 @@ where
     ) {
         format_to!(label, "{layout}");
     }
-    let docs = def.attrs(db).docs();
+    let docs = def.docs(db);
     (label, docs)
 }
 
@@ -685,9 +687,9 @@ fn label_value_and_docs<D, E, V>(
     db: &RootDatabase,
     def: D,
     value_extractor: E,
-) -> (String, Option<hir::Documentation>)
+) -> (String, Option<Documentation>)
 where
-    D: HasAttrs + HirDisplay,
+    D: HasDocs + HirDisplay,
     E: Fn(&D) -> Option<V>,
     V: Display,
 {
@@ -696,7 +698,7 @@ where
     } else {
         def.display(db).to_string()
     };
-    let docs = def.attrs(db).docs();
+    let docs = def.docs(db);
     (label, docs)
 }
 
@@ -727,14 +729,14 @@ fn builtin(famous_defs: &FamousDefs<'_, '_>, builtin: hir::BuiltinType) -> Optio
     // std exposes prim_{} modules with docstrings on the root to document the builtins
     let primitive_mod = format!("prim_{}", builtin.name().display(famous_defs.0.db));
     let doc_owner = find_std_module(famous_defs, &primitive_mod)?;
-    let docs = doc_owner.attrs(famous_defs.0.db).docs()?;
+    let docs = doc_owner.docs(famous_defs.0.db)?;
     markup(Some(docs.into()), builtin.name().display(famous_defs.0.db).to_string(), None)
 }
 
 fn find_std_module(famous_defs: &FamousDefs<'_, '_>, name: &str) -> Option<hir::Module> {
     let db = famous_defs.0.db;
     let std_crate = famous_defs.std()?;
-    let std_root_module = std_crate.root_module(db);
+    let std_root_module = std_crate.root_module();
     std_root_module.children(db).find(|module| {
         module.name(db).map_or(false, |module| module.display(db).to_string() == name)
     })

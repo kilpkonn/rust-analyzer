@@ -313,13 +313,7 @@ impl ExprCollector<'_> {
                 let body = self.collect_labelled_block_opt(label, e.loop_body());
                 self.alloc_expr(Expr::Loop { body, label }, syntax_ptr)
             }
-            ast::Expr::WhileExpr(e) => {
-                let label = e.label().map(|label| self.collect_label(label));
-                let body = self.collect_labelled_block_opt(label, e.loop_body());
-                let condition = self.collect_expr_opt(e.condition());
-
-                self.alloc_expr(Expr::While { condition, body, label }, syntax_ptr)
-            }
+            ast::Expr::WhileExpr(e) => self.collect_while_loop(syntax_ptr, e),
             ast::Expr::ForExpr(e) => self.collect_for_loop(syntax_ptr, e),
             ast::Expr::CallExpr(e) => {
                 let is_rustc_box = {
@@ -511,6 +505,9 @@ impl ExprCollector<'_> {
                 let mut args = Vec::new();
                 let mut arg_types = Vec::new();
                 if let Some(pl) = e.param_list() {
+                    let num_params = pl.params().count();
+                    args.reserve_exact(num_params);
+                    arg_types.reserve_exact(num_params);
                     for param in pl.params() {
                         let pat = this.collect_pat_top(param.pat());
                         let type_ref =
@@ -731,6 +728,52 @@ impl ExprCollector<'_> {
         expr_id
     }
 
+    /// Desugar `ast::WhileExpr` from: `[opt_ident]: while <cond> <body>` into:
+    /// ```ignore (pseudo-rust)
+    /// [opt_ident]: loop {
+    ///   if <cond> {
+    ///     <body>
+    ///   }
+    ///   else {
+    ///     break;
+    ///   }
+    /// }
+    /// ```
+    /// FIXME: Rustc wraps the condition in a construct equivalent to `{ let _t = <cond>; _t }`
+    /// to preserve drop semantics. We should probably do the same in future.
+    fn collect_while_loop(&mut self, syntax_ptr: AstPtr<ast::Expr>, e: ast::WhileExpr) -> ExprId {
+        let label = e.label().map(|label| self.collect_label(label));
+        let body = self.collect_labelled_block_opt(label, e.loop_body());
+
+        // Labels can also be used in the condition expression, like this:
+        // ```
+        // fn main() {
+        //     let mut optional = Some(0);
+        //     'my_label: while let Some(a) = match optional {
+        //         None => break 'my_label,
+        //         Some(val) => Some(val),
+        //     } {
+        //         println!("{}", a);
+        //         optional = None;
+        //     }
+        // }
+        // ```
+        let condition = match label {
+            Some(label) => {
+                self.with_labeled_rib(label, |this| this.collect_expr_opt(e.condition()))
+            }
+            None => self.collect_expr_opt(e.condition()),
+        };
+
+        let break_expr =
+            self.alloc_expr(Expr::Break { expr: None, label: None }, syntax_ptr.clone());
+        let if_expr = self.alloc_expr(
+            Expr::If { condition, then_branch: body, else_branch: Some(break_expr) },
+            syntax_ptr.clone(),
+        );
+        self.alloc_expr(Expr::Loop { body: if_expr, label }, syntax_ptr)
+    }
+
     /// Desugar `ast::ForExpr` from: `[opt_ident]: for <pat> in <head> <body>` into:
     /// ```ignore (pseudo-rust)
     /// match IntoIterator::into_iter(<head>) {
@@ -893,15 +936,14 @@ impl ExprCollector<'_> {
         self.alloc_expr(Expr::Match { expr, arms }, syntax_ptr)
     }
 
-    fn collect_macro_call<F, T, U>(
+    fn collect_macro_call<T, U>(
         &mut self,
         mcall: ast::MacroCall,
         syntax_ptr: AstPtr<ast::MacroCall>,
         record_diagnostics: bool,
-        collector: F,
+        collector: impl FnOnce(&mut Self, Option<T>) -> U,
     ) -> U
     where
-        F: FnOnce(&mut Self, Option<T>) -> U,
         T: ast::AstNode,
     {
         // File containing the macro call. Expansion errors will be attached here.
@@ -1081,7 +1123,9 @@ impl ExprCollector<'_> {
                 ast::Stmt::ExprStmt(es) => matches!(es.expr(), Some(ast::Expr::MacroExpr(_))),
                 _ => false,
             });
-            statement_has_item || matches!(block.tail_expr(), Some(ast::Expr::MacroExpr(_)))
+            statement_has_item
+                || matches!(block.tail_expr(), Some(ast::Expr::MacroExpr(_)))
+                || (block.may_carry_attributes() && block.attrs().next().is_some())
         };
 
         let block_id = if block_has_items {
