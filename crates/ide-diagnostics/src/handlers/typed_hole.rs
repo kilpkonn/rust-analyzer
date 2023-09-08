@@ -127,7 +127,6 @@ impl TypeInhabitant {
 #[derive(Debug, Clone, Eq, Hash, PartialEq)]
 enum TypeTransformation {
     Function(Function),
-    ImplFunction(Function, Impl),
     Variant(Variant),
     Struct(Struct),
 }
@@ -155,7 +154,6 @@ impl TypeTransformation {
     fn ret_ty(&self, db: &dyn HirDatabase) -> Type {
         match self {
             Self::Function(it) => it.ret_type(db),
-            Self::ImplFunction(it, _imp) => it.ret_type(db),
             Self::Variant(it) => it.parent_enum(db).ty(db),
             Self::Struct(it) => it.ty(db),
         }
@@ -169,20 +167,23 @@ impl TypeTransformation {
         let db = sema.db;
         match self {
             Self::Function(it) => {
-                let args =
-                    params.iter().map(|f| f.gen_source_code(items_in_scope, sema)).join(", ");
-                let sig = format!("{}({})", it.name(db).display(db).to_string(), args);
-                format!("{}{}", gen_module_prefix(it.module(db), items_in_scope, db), sig)
-            }
-            Self::ImplFunction(it, _imp) => {
-                let target =
-                    params.first().expect("no self param").gen_source_code(items_in_scope, sema);
-                let args = params
-                    .iter()
-                    .skip(1)
-                    .map(|f| f.gen_source_code(items_in_scope, sema))
-                    .join(", ");
-                format!("{}.{}({})", target, it.name(db).display(db).to_string(), args)
+                if it.has_self_param(db) {
+                    let target = params
+                        .first()
+                        .expect("no self param")
+                        .gen_source_code(items_in_scope, sema);
+                    let args = params
+                        .iter()
+                        .skip(1)
+                        .map(|f| f.gen_source_code(items_in_scope, sema))
+                        .join(", ");
+                    format!("{}.{}({})", target, it.name(db).display(db).to_string(), args)
+                } else {
+                    let args =
+                        params.iter().map(|f| f.gen_source_code(items_in_scope, sema)).join(", ");
+                    let sig = format!("{}({})", it.name(db).display(db).to_string(), args);
+                    format!("{}{}", gen_module_prefix(it.module(db), items_in_scope, db), sig)
+                }
             }
             Self::Variant(variant) => {
                 let inner = match variant.kind(db) {
@@ -308,7 +309,7 @@ fn dfs_search_assoc_item(
                             (
                                 params.iter().map(|(d, _)| *d).min().unwrap_or(0),
                                 TypeTree::TypeTransformation {
-                                    func: TypeTransformation::ImplFunction(func, imp),
+                                    func: TypeTransformation::Function(func),
                                     params: params.into_iter().map(|(_, p)| p).collect(),
                                 },
                             )
