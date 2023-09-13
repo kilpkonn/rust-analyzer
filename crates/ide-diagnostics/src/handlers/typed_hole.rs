@@ -1,7 +1,7 @@
 use hir::{
     db::{ExpandDatabase, HirDatabase},
-    Adt, AssocItem, ClosureStyle, Const, ConstParam, Function, GenericParam, HirDisplay, Impl,
-    Local, Module, ModuleDef, ScopeDef, Semantics, Static, Struct, StructKind, Type, Variant,
+    Adt, AssocItem, ClosureStyle, Const, ConstParam, Field, Function, GenericParam, HirDisplay,
+    Impl, Local, Module, ModuleDef, ScopeDef, Semantics, Static, Struct, StructKind, Type, Variant,
 };
 use ide_db::{
     assists::{Assist, AssistId, AssistKind, GroupLabel},
@@ -129,6 +129,7 @@ enum TypeTransformation {
     Function(Function),
     Variant(Variant),
     Struct(Struct),
+    Field(Field),
 }
 
 fn gen_module_prefix(
@@ -156,6 +157,7 @@ impl TypeTransformation {
             Self::Function(it) => it.ret_type(db),
             Self::Variant(it) => it.parent_enum(db).ty(db),
             Self::Struct(it) => it.ty(db),
+            Self::Field(it) => it.ty(db),
         }
     }
     fn gen_source_code(
@@ -237,6 +239,14 @@ impl TypeTransformation {
                     .join(", ");
                 let sig = format!("{} {{ {} }}", it.name(db).display(db).to_string(), args);
                 format!("{}{}", gen_module_prefix(it.module(db), items_in_scope, db), sig)
+            }
+            Self::Field(it) => {
+                let strukt = params
+                    .first()
+                    .expect("No params for struct field")
+                    .gen_source_code(items_in_scope, sema);
+                let field = it.name(db).display(db).to_string();
+                format!("{strukt}.{field}")
             }
         }
     }
@@ -348,27 +358,21 @@ fn dfs_term_search(
     for def in defs {
         match def {
             ScopeDef::ModuleDef(ModuleDef::Const(it)) => {
+                let tt = TypeTree::TypeInhabitant(TypeInhabitant::Const(*it));
                 if it.ty(db).could_unify_with_normalized(db, goal) {
-                    res.push((depth, TypeTree::TypeInhabitant(TypeInhabitant::Const(*it))));
+                    res.push((depth, tt));
                 } else {
-                    res.extend(dfs_search_assoc_item(
-                        &TypeTree::TypeInhabitant(TypeInhabitant::Const(*it)),
-                        defs,
-                        db,
-                        depth.saturating_sub(1),
-                    ));
+                    res.extend(dfs_search_assoc_item(&tt, defs, db, depth.saturating_sub(1)));
+                    res.extend(matching_struct_fields(db, &tt, goal, depth))
                 }
             }
             ScopeDef::ModuleDef(ModuleDef::Static(it)) => {
+                let tt = TypeTree::TypeInhabitant(TypeInhabitant::Static(*it));
                 if it.ty(db).could_unify_with_normalized(db, goal) {
-                    res.push((depth, TypeTree::TypeInhabitant(TypeInhabitant::Static(*it))));
+                    res.push((depth, tt));
                 } else {
-                    res.extend(dfs_search_assoc_item(
-                        &TypeTree::TypeInhabitant(TypeInhabitant::Static(*it)),
-                        defs,
-                        db,
-                        depth.saturating_sub(1),
-                    ));
+                    res.extend(dfs_search_assoc_item(&tt, defs, db, depth.saturating_sub(1)));
+                    res.extend(matching_struct_fields(db, &tt, goal, depth))
                 }
             }
             ScopeDef::GenericParam(GenericParam::ConstParam(it)) => {
@@ -384,15 +388,12 @@ fn dfs_term_search(
                 }
             }
             ScopeDef::Local(it) => {
+                let tt = TypeTree::TypeInhabitant(TypeInhabitant::Local(*it));
                 if it.ty(db).could_unify_with_normalized(db, goal) {
-                    res.push((depth, TypeTree::TypeInhabitant(TypeInhabitant::Local(*it))));
+                    res.push((depth, tt));
                 } else {
-                    res.extend(dfs_search_assoc_item(
-                        &TypeTree::TypeInhabitant(TypeInhabitant::Local(*it)),
-                        defs,
-                        db,
-                        depth.saturating_sub(1),
-                    ));
+                    res.extend(dfs_search_assoc_item(&tt, defs, db, depth.saturating_sub(1)));
+                    res.extend(matching_struct_fields(db, &tt, goal, depth))
                 }
             }
             ScopeDef::ModuleDef(ModuleDef::Function(it)) => {
@@ -437,6 +438,28 @@ fn dfs_term_search(
         }
     }
     res.into_iter().unique().collect()
+}
+
+fn matching_struct_fields(
+    db: &dyn HirDatabase,
+    tt: &TypeTree,
+    goal: &Type,
+    depth: u32,
+) -> Vec<(u32, TypeTree)> {
+    tt.ty(db)
+        .fields(db)
+        .into_iter()
+        .filter(|(_, ty)| ty.could_unify_with_normalized(db, goal))
+        .map(|(field, _)| {
+            (
+                depth,
+                TypeTree::TypeTransformation {
+                    func: TypeTransformation::Field(field),
+                    params: vec![tt.clone()],
+                },
+            )
+        })
+        .collect()
 }
 
 fn build_permutations(
