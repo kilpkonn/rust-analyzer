@@ -387,6 +387,7 @@ impl flags::AnalysisStats {
                     Some(it) => it,
                     None => {
                         acc.tail_expr_no_term += 1;
+                        println!("\n{}\n", &original_text);
                         continue;
                     }
                 };

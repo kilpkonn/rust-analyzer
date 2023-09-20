@@ -284,6 +284,7 @@ impl TypeTree {
 
 fn dfs_search_assoc_item(
     tt: &TypeTree,
+    goal: &Type,
     defs: &FxHashSet<ScopeDef>,
     db: &dyn HirDatabase,
     depth: u32,
@@ -329,7 +330,7 @@ fn dfs_search_assoc_item(
                     let rec_res: Vec<(u32, TypeTree)> = new_tts
                         .iter()
                         .flat_map(|(d, new_tt)| {
-                            dfs_search_assoc_item(&new_tt, defs, db, d.saturating_sub(1))
+                            dfs_search_assoc_item(&new_tt, goal, defs, db, d.saturating_sub(1))
                                 .into_iter()
                         })
                         .collect();
@@ -340,6 +341,7 @@ fn dfs_search_assoc_item(
         })
         .flatten()
         .unique()
+        .filter(|(_, tt)| tt.ty(db).could_unify_with_normalized(db, goal))
         .collect()
 }
 
@@ -362,7 +364,7 @@ fn dfs_term_search(
                 if it.ty(db).could_unify_with_normalized(db, goal) {
                     res.push((depth, tt));
                 } else {
-                    res.extend(dfs_search_assoc_item(&tt, defs, db, depth.saturating_sub(1)));
+                    res.extend(dfs_search_assoc_item(&tt, goal, defs, db, depth.saturating_sub(1)));
                     res.extend(matching_struct_fields(db, &tt, goal, depth))
                 }
             }
@@ -371,7 +373,7 @@ fn dfs_term_search(
                 if it.ty(db).could_unify_with_normalized(db, goal) {
                     res.push((depth, tt));
                 } else {
-                    res.extend(dfs_search_assoc_item(&tt, defs, db, depth.saturating_sub(1)));
+                    res.extend(dfs_search_assoc_item(&tt, goal, defs, db, depth.saturating_sub(1)));
                     res.extend(matching_struct_fields(db, &tt, goal, depth))
                 }
             }
@@ -381,6 +383,7 @@ fn dfs_term_search(
                 } else {
                     res.extend(dfs_search_assoc_item(
                         &TypeTree::TypeInhabitant(TypeInhabitant::ConstParam(*it)),
+                        goal,
                         defs,
                         db,
                         depth.saturating_sub(1),
@@ -392,7 +395,7 @@ fn dfs_term_search(
                 if it.ty(db).could_unify_with_normalized(db, goal) {
                     res.push((depth, tt));
                 } else {
-                    res.extend(dfs_search_assoc_item(&tt, defs, db, depth.saturating_sub(1)));
+                    res.extend(dfs_search_assoc_item(&tt, goal, defs, db, depth.saturating_sub(1)));
                     res.extend(matching_struct_fields(db, &tt, goal, depth))
                 }
             }
@@ -487,7 +490,9 @@ fn build_permutations(
 
 #[cfg(test)]
 mod tests {
-    use crate::tests::{check_diagnostics, check_fixes_unordered, check_has_fix};
+    use crate::tests::{
+        check_diagnostics, check_fixes_unordered, check_has_fix, check_has_single_fix,
+    };
 
     #[test]
     fn unknown() {
@@ -695,7 +700,7 @@ fn main() {
 
     #[test]
     fn ignore_impl_func_with_incorrect_return() {
-        check_has_fix(
+        check_has_single_fix(
             r#"
 struct Bar {}
 trait Foo {
