@@ -387,6 +387,7 @@ impl flags::AnalysisStats {
                     Some(it) => it,
                     None => {
                         acc.tail_expr_no_term += 1;
+                        acc.total_tail_exprs += 1;
                         println!("\n{}\n", &original_text);
                         continue;
                     }
@@ -435,10 +436,10 @@ impl flags::AnalysisStats {
             percentage(acc.tail_expr_syntax_hits, acc.total_tail_exprs)
         ));
         bar.println(format!(
-            "Tail Exprs not found: {}/{} ({})%",
-            acc.tail_expr_no_term,
+            "Tail Exprs found: {}/{} ({})%",
+            acc.total_tail_exprs - acc.tail_expr_no_term,
             acc.total_tail_exprs,
-            percentage(acc.tail_expr_no_term, acc.total_tail_exprs)
+            percentage(acc.total_tail_exprs - acc.tail_expr_no_term, acc.total_tail_exprs)
         ));
 
         bar.finish_and_clear();
