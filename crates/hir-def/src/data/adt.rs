@@ -11,7 +11,7 @@ use hir_expand::{
 };
 use intern::Interned;
 use la_arena::{Arena, ArenaMap};
-use rustc_abi::{Align, Integer, IntegerType, ReprFlags, ReprOptions};
+use rustc_dependencies::abi::{Align, Integer, IntegerType, ReprFlags, ReprOptions};
 use syntax::ast::{self, HasName, HasVisibility};
 use triomphe::Arc;
 
@@ -447,6 +447,7 @@ impl VariantData {
         }
     }
 
+    // FIXME: Linear lookup
     pub fn field(&self, name: &Name) -> Option<LocalFieldId> {
         self.fields().iter().find_map(|(id, data)| if &data.name == name { Some(id) } else { None })
     }

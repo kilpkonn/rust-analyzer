@@ -69,6 +69,7 @@ pub(crate) struct GlobalState {
 
     // status
     pub(crate) shutdown_requested: bool,
+    pub(crate) send_hint_refresh_query: bool,
     pub(crate) last_reported_status: Option<lsp_ext::ServerStatusParams>,
 
     // proc macros
@@ -180,6 +181,7 @@ impl GlobalState {
             mem_docs: MemDocs::default(),
             semantic_tokens_cache: Arc::new(Default::default()),
             shutdown_requested: false,
+            send_hint_refresh_query: false,
             last_reported_status: None,
             source_root_config: SourceRootConfig::default(),
             config_errors: Default::default(),
@@ -495,6 +497,10 @@ impl GlobalStateSnapshot {
 
     pub(crate) fn vfs_memory_usage(&self) -> usize {
         self.vfs_read().memory_usage()
+    }
+
+    pub(crate) fn file_exists(&self, file_id: FileId) -> bool {
+        self.vfs.read().0.exists(file_id)
     }
 }
 

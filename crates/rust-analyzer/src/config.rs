@@ -13,8 +13,9 @@ use cfg::{CfgAtom, CfgDiff};
 use flycheck::FlycheckConfig;
 use ide::{
     AssistConfig, CallableSnippets, CompletionConfig, DiagnosticsConfig, ExprFillDefaultMode,
-    HighlightConfig, HighlightRelatedConfig, HoverConfig, HoverDocFormat, InlayHintsConfig,
-    JoinLinesConfig, MemoryLayoutHoverConfig, MemoryLayoutHoverRenderKind, Snippet, SnippetScope,
+    HighlightConfig, HighlightRelatedConfig, HoverConfig, HoverDocFormat, InlayFieldsToResolve,
+    InlayHintsConfig, JoinLinesConfig, MemoryLayoutHoverConfig, MemoryLayoutHoverRenderKind,
+    Snippet, SnippetScope,
 };
 use ide_db::{
     imports::insert_use::{ImportGranularity, InsertUseConfig, PrefixKind},
@@ -89,6 +90,12 @@ config_data! {
         /// build procedural macros. The command is required to output json
         /// and should therefore include `--message-format=json` or a similar
         /// option.
+        ///
+        /// If there are multiple linked projects/workspaces, this command is invoked for
+        /// each of them, with the working directory being the workspace root
+        /// (i.e., the folder containing the `Cargo.toml`). This can be overwritten
+        /// by changing `#rust-analyzer.cargo.buildScripts.invocationStrategy#` and
+        /// `#rust-analyzer.cargo.buildScripts.invocationLocation#`.
         ///
         /// By default, a cargo invocation will be constructed for the configured
         /// targets and features, with the following base command line:
@@ -181,9 +188,11 @@ config_data! {
         /// Cargo, you might also want to change
         /// `#rust-analyzer.cargo.buildScripts.overrideCommand#`.
         ///
-        /// If there are multiple linked projects, this command is invoked for
-        /// each of them, with the working directory being the project root
-        /// (i.e., the folder containing the `Cargo.toml`).
+        /// If there are multiple linked projects/workspaces, this command is invoked for
+        /// each of them, with the working directory being the workspace root
+        /// (i.e., the folder containing the `Cargo.toml`). This can be overwritten
+        /// by changing `#rust-analyzer.cargo.check.invocationStrategy#` and
+        /// `#rust-analyzer.cargo.check.invocationLocation#`.
         ///
         /// An example command would be:
         ///
@@ -564,6 +573,7 @@ pub struct Config {
     data: ConfigData,
     detached_files: Vec<AbsPathBuf>,
     snippets: Vec<Snippet>,
+    is_visual_studio_code: bool,
 }
 
 type ParallelCachePrimingNumThreads = u8;
@@ -759,6 +769,7 @@ impl Config {
         root_path: AbsPathBuf,
         caps: ClientCapabilities,
         workspace_roots: Vec<AbsPathBuf>,
+        is_visual_studio_code: bool,
     ) -> Self {
         Config {
             caps,
@@ -768,6 +779,7 @@ impl Config {
             root_path,
             snippets: Default::default(),
             workspace_roots,
+            is_visual_studio_code,
         }
     }
 
@@ -1335,6 +1347,18 @@ impl Config {
     }
 
     pub fn inlay_hints(&self) -> InlayHintsConfig {
+        let client_capability_fields = self
+            .caps
+            .text_document
+            .as_ref()
+            .and_then(|text| text.inlay_hint.as_ref())
+            .and_then(|inlay_hint_caps| inlay_hint_caps.resolve_support.as_ref())
+            .map(|inlay_resolve| inlay_resolve.properties.iter())
+            .into_iter()
+            .flatten()
+            .cloned()
+            .collect::<FxHashSet<_>>();
+
         InlayHintsConfig {
             render_colons: self.data.inlayHints_renderColons,
             type_hints: self.data.inlayHints_typeHints_enable,
@@ -1394,6 +1418,13 @@ impl Config {
                 Some(self.data.inlayHints_closingBraceHints_minLines)
             } else {
                 None
+            },
+            fields_to_resolve: InlayFieldsToResolve {
+                resolve_text_edits: client_capability_fields.contains("textEdits"),
+                resolve_hint_tooltip: client_capability_fields.contains("tooltip"),
+                resolve_label_tooltip: client_capability_fields.contains("label.tooltip"),
+                resolve_label_location: client_capability_fields.contains("label.location"),
+                resolve_label_command: client_capability_fields.contains("label.command"),
             },
         }
     }
@@ -1646,6 +1677,12 @@ impl Config {
 
     pub fn typing_autoclose_angle(&self) -> bool {
         self.data.typing_autoClosingAngleBrackets_enable
+    }
+
+    // FIXME: VSCode seems to work wrong sometimes, see https://github.com/microsoft/vscode/issues/193124
+    // hence, distinguish it for now.
+    pub fn is_visual_studio_code(&self) -> bool {
+        self.is_visual_studio_code
     }
 }
 // Deserialization definitions
@@ -2535,8 +2572,12 @@ mod tests {
 
     #[test]
     fn proc_macro_srv_null() {
-        let mut config =
-            Config::new(AbsPathBuf::try_from(project_root()).unwrap(), Default::default(), vec![]);
+        let mut config = Config::new(
+            AbsPathBuf::try_from(project_root()).unwrap(),
+            Default::default(),
+            vec![],
+            false,
+        );
         config
             .update(serde_json::json!({
                 "procMacro_server": null,
@@ -2547,8 +2588,12 @@ mod tests {
 
     #[test]
     fn proc_macro_srv_abs() {
-        let mut config =
-            Config::new(AbsPathBuf::try_from(project_root()).unwrap(), Default::default(), vec![]);
+        let mut config = Config::new(
+            AbsPathBuf::try_from(project_root()).unwrap(),
+            Default::default(),
+            vec![],
+            false,
+        );
         config
             .update(serde_json::json!({
                 "procMacro": {"server": project_root().display().to_string()}
@@ -2559,8 +2604,12 @@ mod tests {
 
     #[test]
     fn proc_macro_srv_rel() {
-        let mut config =
-            Config::new(AbsPathBuf::try_from(project_root()).unwrap(), Default::default(), vec![]);
+        let mut config = Config::new(
+            AbsPathBuf::try_from(project_root()).unwrap(),
+            Default::default(),
+            vec![],
+            false,
+        );
         config
             .update(serde_json::json!({
                 "procMacro": {"server": "./server"}

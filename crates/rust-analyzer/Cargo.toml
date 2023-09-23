@@ -50,7 +50,6 @@ always-assert = "0.1.2"
 # These 3 deps are not used by r-a directly, but we list them here to lock in their versions
 # in our transitive deps to prevent them from pulling in windows-sys 0.45.0
 mio = "=0.8.5"
-filetime = "=0.2.19"
 parking_lot_core = "=0.9.6"
 
 cfg.workspace = true
@@ -58,6 +57,7 @@ flycheck.workspace = true
 hir-def.workspace = true
 hir-ty.workspace = true
 hir.workspace = true
+rustc-dependencies.workspace = true
 ide-db.workspace = true
 # This should only be used in CLI
 ide-ssr.workspace = true
@@ -68,6 +68,7 @@ profile.workspace = true
 project-model.workspace = true
 stdx.workspace = true
 syntax.workspace = true
+parser.workspace = true
 toolchain.workspace = true
 vfs-notify.workspace = true
 vfs.workspace = true
@@ -91,4 +92,12 @@ mbe.workspace = true
 jemalloc = ["jemallocator", "profile/jemalloc"]
 force-always-assert = ["always-assert/force"]
 sysroot-abi = []
-in-rust-tree = ["sysroot-abi", "ide/in-rust-tree", "syntax/in-rust-tree"]
+in-rust-tree = [
+    "sysroot-abi",
+    "ide/in-rust-tree",
+    "syntax/in-rust-tree",
+    "parser/in-rust-tree",
+    "rustc-dependencies/in-rust-tree",
+    "hir-def/in-rust-tree",
+    "hir-ty/in-rust-tree",
+]

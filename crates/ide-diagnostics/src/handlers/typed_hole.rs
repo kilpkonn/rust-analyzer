@@ -89,6 +89,7 @@ enum TypeInhabitant {
     Static(Static),
     Local(Local),
     ConstParam(ConstParam),
+    SelfParam(Impl),
 }
 
 impl TypeInhabitant {
@@ -109,6 +110,7 @@ impl TypeInhabitant {
             TypeInhabitant::Static(it) => (it.name(db).display(db).to_string(), it.module(db)),
             TypeInhabitant::Local(it) => (it.name(db).display(db).to_string(), it.module(db)),
             TypeInhabitant::ConstParam(it) => (it.name(db).display(db).to_string(), it.module(db)),
+            TypeInhabitant::SelfParam(_) => return String::from("self"),
         };
         let prefix = gen_module_prefix(module, items_in_scope, db);
         format!("{}{}", prefix, name)
@@ -120,6 +122,7 @@ impl TypeInhabitant {
             TypeInhabitant::Static(it) => it.ty(db),
             TypeInhabitant::Local(it) => it.ty(db),
             TypeInhabitant::ConstParam(it) => it.ty(db),
+            TypeInhabitant::SelfParam(it) => it.self_ty(db),
         }
     }
 }
@@ -313,19 +316,23 @@ fn dfs_search_assoc_item(
                             }))
                             .collect();
 
-                    let mut new_tts: Vec<(u32, TypeTree)> = param_trees
-                        .into_iter()
-                        .multi_cartesian_product()
-                        .map(|params| {
-                            (
-                                params.iter().map(|(d, _)| *d).min().unwrap_or(0),
-                                TypeTree::TypeTransformation {
-                                    func: TypeTransformation::Function(func),
-                                    params: params.into_iter().map(|(_, p)| p).collect(),
-                                },
-                            )
-                        })
-                        .collect();
+                    // let mut new_tts: Vec<(u32, TypeTree)> = param_trees
+                    //     .into_iter()
+                    //     .multi_cartesian_product()
+                    //     .map(|params| {
+                    //         (
+                    //             params.iter().map(|(d, _)| *d).min().unwrap_or(0),
+                    //             TypeTree::TypeTransformation {
+                    //                 func: TypeTransformation::Function(func),
+                    //                 params: params.into_iter().map(|(_, p)| p).collect(),
+                    //             },
+                    //         )
+                    //     })
+                    //     .collect();
+                    let mut new_tts = build_permutations(
+                        param_trees.into_iter(),
+                        TypeTransformation::Function(func),
+                    );
 
                     let rec_res: Vec<(u32, TypeTree)> = new_tts
                         .iter()
@@ -397,6 +404,15 @@ fn dfs_term_search(
                 } else {
                     res.extend(dfs_search_assoc_item(&tt, goal, defs, db, depth.saturating_sub(1)));
                     res.extend(matching_struct_fields(db, &tt, goal, depth))
+                }
+            }
+            ScopeDef::ImplSelfType(it) => {
+                let tt = TypeTree::TypeInhabitant(TypeInhabitant::SelfParam(*it));
+                if it.self_ty(db).could_unify_with_normalized(db, goal) {
+                    res.push((depth, tt));
+                } else {
+                    // res.extend(dfs_search_assoc_item(&tt, goal, defs, db, depth.saturating_sub(1)));
+                    // res.extend(matching_struct_fields(db, &tt, goal, depth))
                 }
             }
             ScopeDef::ModuleDef(ModuleDef::Function(it)) => {
@@ -474,17 +490,25 @@ fn build_permutations(
     if count_tree.count() == 0 {
         return vec![(0, TypeTree::TypeTransformation { func: tt.clone(), params: Vec::new() })];
     }
+
+    let mut max_depth = 0;
     param_trees
         .multi_cartesian_product()
-        .map(move |params| {
-            (
-                params.iter().map(|(d, _)| *d).min().unwrap_or(0),
+        .filter_map(move |params| {
+            let depth = params.iter().map(|(d, _)| *d).min().unwrap_or(0);
+            if depth < max_depth {
+                return None;
+            }
+            max_depth = depth;
+            Some((
+                depth,
                 TypeTree::TypeTransformation {
                     func: tt.clone(),
                     params: params.into_iter().map(|(_, p)| p).collect(),
                 },
-            )
+            ))
         })
+        .filter(|(d, _)| *d >= max_depth)
         .collect()
 }
 
