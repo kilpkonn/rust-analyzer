@@ -30,6 +30,7 @@ mod has_source;
 pub mod diagnostics;
 pub mod db;
 pub mod symbols;
+pub mod term_search;
 
 mod display;
 
