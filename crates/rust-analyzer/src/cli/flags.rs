@@ -133,6 +133,9 @@ xflags::xflags! {
 
             /// The output path where the SCIP file will be written to. Defaults to `index.scip`.
             optional --output path: PathBuf
+
+            /// A path to an json configuration file that can be used to customize cargo behavior.
+            optional --config-path config_path: PathBuf
         }
     }
 }
@@ -242,6 +245,7 @@ pub struct Scip {
     pub path: PathBuf,
 
     pub output: Option<PathBuf>,
+    pub config_path: Option<PathBuf>,
 }
 
 impl RustAnalyzer {

@@ -125,6 +125,7 @@ mod handlers {
     mod convert_let_else_to_match;
     mod convert_match_to_let_else;
     mod convert_nested_function_to_closure;
+    mod convert_tuple_return_type_to_struct;
     mod convert_tuple_struct_to_named_struct;
     mod convert_named_struct_to_tuple_struct;
     mod convert_to_guarded_return;
@@ -194,6 +195,7 @@ mod handlers {
     mod replace_try_expr_with_match;
     mod replace_derive_with_manual_impl;
     mod replace_if_let_with_match;
+    mod replace_is_method_with_if_let_method;
     mod replace_method_eager_lazy;
     mod replace_arith_op;
     mod introduce_named_generic;
@@ -226,6 +228,7 @@ mod handlers {
             add_return_type::add_return_type,
             add_turbo_fish::add_turbo_fish,
             apply_demorgan::apply_demorgan,
+            apply_demorgan::apply_demorgan_iterator,
             auto_import::auto_import,
             bind_unused_param::bind_unused_param,
             bool_to_enum::bool_to_enum,
@@ -239,6 +242,7 @@ mod handlers {
             convert_iter_for_each_to_for::convert_for_loop_with_for_each,
             convert_let_else_to_match::convert_let_else_to_match,
             convert_match_to_let_else::convert_match_to_let_else,
+            convert_tuple_return_type_to_struct::convert_tuple_return_type_to_struct,
             convert_named_struct_to_tuple_struct::convert_named_struct_to_tuple_struct,
             convert_nested_function_to_closure::convert_nested_function_to_closure,
             convert_to_guarded_return::convert_to_guarded_return,
@@ -310,6 +314,7 @@ mod handlers {
             replace_derive_with_manual_impl::replace_derive_with_manual_impl,
             replace_if_let_with_match::replace_if_let_with_match,
             replace_if_let_with_match::replace_match_with_if_let,
+            replace_is_method_with_if_let_method::replace_is_method_with_if_let_method,
             replace_let_with_if_let::replace_let_with_if_let,
             replace_method_eager_lazy::replace_with_eager_method,
             replace_method_eager_lazy::replace_with_lazy_method,
