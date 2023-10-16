@@ -1,7 +1,7 @@
 use hir::{
     db::{ExpandDatabase, HirDatabase},
     Adt, AssocItem, ClosureStyle, Const, ConstParam, Field, Function, GenericParam, HirDisplay,
-    Impl, Local, Module, ModuleDef, ScopeDef, Semantics, Static, Struct, StructKind, Type, Variant,
+    Impl, Local, Module, ModuleDef, ScopeDef, Semantics, Static, Struct, StructKind, Type, Variant, DefWithBody,
 };
 use ide_db::{
     assists::{Assist, AssistId, AssistKind, GroupLabel},
@@ -75,7 +75,7 @@ pub fn fixes(sema: &Semantics<'_, RootDatabase>, d: &hir::TypedHole) -> Option<V
             trigger_signature_help: false,
         });
     }
-    // dbg!(&assists.iter().map(|a| a.label.to_string()).collect::<Vec<_>>());
+    dbg!(&assists.iter().map(|a| a.label.to_string()).collect::<Vec<_>>());
     if !assists.is_empty() {
         Some(assists)
     } else {
@@ -422,6 +422,9 @@ fn dfs_term_search(
                     });
                     res.extend(build_permutations(param_trees, TypeTransformation::Function(*it)));
                 }
+                let def: DefWithBody = (*it).into();
+                let res = db.borrowck(def.into());
+                dbg!(res);
             }
             ScopeDef::ModuleDef(ModuleDef::Variant(it)) => {
                 if it.parent_enum(db).ty(db).could_unify_with_normalized(db, goal) {
@@ -786,6 +789,25 @@ impl Foo for i32 {
 fn main() {
     let a: i32 = 1;
     let c: Bar = a.foo();
+}"#,
+        );
+    }
+
+    #[test]
+    fn test_find_reference_return() {
+        check_has_fix(
+            r#"
+fn foo(a: i32) -> &i32 {
+    &a
+}
+fn main() {
+    let a: &i32 = &1;
+    let c: &i32 = _$0;
+}"#,
+            r#"
+fn main() {
+    let a: &i32 = &1;
+    let c: &i32 = xa;
 }"#,
         );
     }
