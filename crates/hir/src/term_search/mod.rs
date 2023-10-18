@@ -6,9 +6,8 @@ use rustc_hash::FxHashSet;
 
 use crate::{Adt, AssocItem, GenericParam, Impl, ModuleDef, ScopeDef, Type};
 
-use self::type_tree::{TypeInhabitant, TypeTransformation, TypeTree};
-
 pub mod type_tree;
+pub use type_tree::{TypeInhabitant, TypeTransformation, TypeTree};
 
 pub fn term_search(
     goal: &Type,

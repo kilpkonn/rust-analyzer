@@ -44,7 +44,7 @@ pub mod handlers {
     pub(crate) mod private_assoc_item;
     pub(crate) mod private_field;
     pub(crate) mod replace_filter_map_next_with_find_map;
-    pub mod typed_hole;
+    pub(crate) mod typed_hole;
     pub(crate) mod type_mismatch;
     pub(crate) mod unimplemented_builtin_macro;
     pub(crate) mod unresolved_extern_crate;

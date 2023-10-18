@@ -8,7 +8,7 @@ use std::{
 
 use hir::{
     db::{DefDatabase, ExpandDatabase, HirDatabase},
-    Adt, AssocItem, Crate, DefWithBody, HasSource, HirDisplay, InFile, ModuleDef, Name, TypedHole,
+    Adt, AssocItem, Crate, DefWithBody, HasSource, HirDisplay, ModuleDef, Name,
 };
 use hir_def::{
     body::{BodySourceMap, SyntheticSyntax},
@@ -33,7 +33,7 @@ use profile::{Bytes, StopWatch};
 use project_model::{CargoConfig, ProjectManifest, ProjectWorkspace, RustLibSource};
 use rayon::prelude::*;
 use rustc_hash::FxHashSet;
-use syntax::{AstNode, AstPtr, SyntaxNode};
+use syntax::{AstNode, SyntaxNode};
 use vfs::{AbsPathBuf, FileId, Vfs, VfsPath};
 
 use crate::cli::{
@@ -379,21 +379,25 @@ impl flags::AnalysisStats {
                     .skip(usize::from(range.start()))
                     .take(usize::from(range.end()) - usize::from(range.start()))
                     .collect();
-                // let expected_edit = ide::TextEdit::replace(range, original_text.clone());
 
-                let hole = TypedHole {
-                    expr: InFile::new(file_id.into(), AstPtr::new(&expr)),
-                    expected: target_ty.adjusted(),
+                let scope = match sema.scope(&node) {
+                    Some(it) => it,
+                    None => continue,
                 };
 
-                let assists = match ide_diagnostics::handlers::typed_hole::fixes(&sema, &hole) {
-                    Some(it) => it,
-                    None => {
-                        acc.tail_expr_no_term += 1;
-                        acc.total_tail_exprs += 1;
-                        println!("\n{}\n", &original_text);
-                        continue;
-                    }
+                let mut defs = FxHashSet::default();
+                defs.insert(hir::ScopeDef::ModuleDef(ModuleDef::Module(scope.module())));
+                scope.process_all_names(&mut |_, def| {
+                    defs.insert(def);
+                });
+
+                let assists = hir::term_search::term_search(&target_ty.adjusted(), &defs, db);
+
+                if assists.is_empty() {
+                    acc.tail_expr_no_term += 1;
+                    acc.total_tail_exprs += 1;
+                    println!("\n{}\n", &original_text);
+                    continue;
                 };
 
                 fn trim(s: &str) -> String {
@@ -401,17 +405,9 @@ impl flags::AnalysisStats {
                 }
 
                 let mut syntax_hit_found = false;
-                for assist in assists {
-                    let actual_insert = {
-                        let source_change = assist.source_change.as_ref().unwrap();
-                        assert!(source_change.source_file_edits.values().len() == 1);
-                        let (edit, _snippet_edit) =
-                            source_change.source_file_edits.values().next().unwrap();
-                        let indel = edit.iter().next().unwrap();
-                        indel.insert.clone()
-                    };
-
-                    syntax_hit_found |= trim(&original_text) == trim(&actual_insert);
+                for (_, assist) in assists {
+                    let generated = assist.gen_source_code(&defs, &sema);
+                    syntax_hit_found |= trim(&original_text) == trim(&generated);
                 }
 
                 if syntax_hit_found {
