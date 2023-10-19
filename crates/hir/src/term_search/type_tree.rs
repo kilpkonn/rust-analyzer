@@ -51,8 +51,8 @@ impl TypeInhabitant {
                 (name, it.module(db))
             }
             TypeInhabitant::Static(it) => (it.name(db).display(db).to_string(), it.module(db)),
-            TypeInhabitant::Local(it) => (it.name(db).display(db).to_string(), it.module(db)),
-            TypeInhabitant::ConstParam(it) => (it.name(db).display(db).to_string(), it.module(db)),
+            TypeInhabitant::Local(it) => return it.name(db).display(db).to_string(),
+            TypeInhabitant::ConstParam(it) => return it.name(db).display(db).to_string(),
             TypeInhabitant::SelfParam(_) => return String::from("self"),
         };
         let prefix = gen_module_prefix(module, items_in_scope, db);

@@ -88,7 +88,7 @@ impl flags::AnalysisStats {
         };
 
         let (host, vfs, _proc_macro) =
-            load_workspace(workspace, &cargo_config.extra_env, &load_cargo_config)?;
+            load_workspace(workspace.clone(), &cargo_config.extra_env, &load_cargo_config)?;
         let db = host.raw_database();
         eprint!("{:<20} {}", "Database loaded:", db_load_sw.elapsed());
         eprint!(" (metadata {metadata_time}");
@@ -233,7 +233,7 @@ impl flags::AnalysisStats {
         }
 
         if self.run_term_search {
-            self.run_term_search(db, file_ids, verbosity);
+            self.run_term_search(&workspace, db, &vfs, file_ids, verbosity);
         }
 
         let total_span = analysis_sw.elapsed();
@@ -322,7 +322,22 @@ impl flags::AnalysisStats {
         report_metric("const eval time", const_eval_time.time.as_millis() as u64, "ms");
     }
 
-    fn run_term_search(&self, db: &RootDatabase, mut file_ids: Vec<FileId>, verbosity: Verbosity) {
+    fn run_term_search(
+        &self,
+        ws: &ProjectWorkspace,
+        db: &RootDatabase,
+        vfs: &Vfs,
+        mut file_ids: Vec<FileId>,
+        verbosity: Verbosity,
+    ) {
+        let no_progress = &|_| ();
+
+        let mut cargo_config = CargoConfig::default();
+        cargo_config.sysroot = match self.no_sysroot {
+            true => None,
+            false => Some(RustLibSource::Discover),
+        };
+
         let mut bar = match verbosity {
             Verbosity::Quiet | Verbosity::Spammy => ProgressReport::hidden(),
             _ if self.parallel || self.output.is_some() => ProgressReport::hidden(),
@@ -337,6 +352,7 @@ impl flags::AnalysisStats {
             tail_expr_syntax_hits: u64,
             tail_expr_no_term: u64,
             total_tail_exprs: u64,
+            errors: u64,
         }
 
         let mut acc: Acc = Default::default();
@@ -347,6 +363,8 @@ impl flags::AnalysisStats {
             let _ = db.parse(file_id);
 
             let parse = sema.parse(file_id);
+            let file_txt = db.file_text(file_id);
+            let path = vfs.file_path(file_id).as_path().unwrap().to_owned();
 
             for node in parse.syntax().descendants() {
                 let expr = match syntax::ast::Expr::cast(node.clone()) {
@@ -396,7 +414,7 @@ impl flags::AnalysisStats {
                 if assists.is_empty() {
                     acc.tail_expr_no_term += 1;
                     acc.total_tail_exprs += 1;
-                    println!("\n{}\n", &original_text);
+                    // println!("\n{}\n", &original_text);
                     continue;
                 };
 
@@ -408,6 +426,19 @@ impl flags::AnalysisStats {
                 for (_, assist) in assists {
                     let generated = assist.gen_source_code(&defs, &sema);
                     syntax_hit_found |= trim(&original_text) == trim(&generated);
+
+                    // Validate if type-checks
+                    let mut txt = file_txt.to_string();
+                    let edit = ide::TextEdit::replace(range, generated);
+                    edit.apply(&mut txt);
+
+                    std::fs::write(&path, txt).unwrap();
+
+                    let res = ws.run_build_scripts(&cargo_config, no_progress).unwrap();
+                    if let Some(err) = res.error() {
+                        acc.errors += 1;
+                        println!("\n{}", err);
+                    }
                 }
 
                 if syntax_hit_found {
@@ -426,6 +457,9 @@ impl flags::AnalysisStats {
                 }
                 bar.set_message(msg);
             }
+            // Revert file back to original state
+            std::fs::write(&path, file_txt.to_string()).unwrap();
+
             bar.inc(1);
         }
         bar.println(format!(
@@ -440,6 +474,7 @@ impl flags::AnalysisStats {
             acc.total_tail_exprs,
             percentage(acc.total_tail_exprs - acc.tail_expr_no_term, acc.total_tail_exprs)
         ));
+        bar.println(format!("Tail Exprs errors: {}", acc.errors));
 
         bar.finish_and_clear();
     }

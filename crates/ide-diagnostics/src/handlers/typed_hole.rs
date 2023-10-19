@@ -56,7 +56,7 @@ pub fn fixes(sema: &Semantics<'_, RootDatabase>, d: &hir::TypedHole) -> Option<V
 
     let mut assists = vec![];
     for (_d, path) in paths {
-        let code = path.gen_source_code(&defs, sema);
+        let code = format!("asd {}", path.gen_source_code(&defs, sema));
 
         assists.push(Assist {
             id: AssistId("typed-hole", AssistKind::QuickFix),
