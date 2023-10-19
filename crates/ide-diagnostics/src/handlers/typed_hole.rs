@@ -56,7 +56,7 @@ pub fn fixes(sema: &Semantics<'_, RootDatabase>, d: &hir::TypedHole) -> Option<V
 
     let mut assists = vec![];
     for (_d, path) in paths {
-        let code = format!("asd {}", path.gen_source_code(&defs, sema));
+        let code = path.gen_source_code(&defs, sema);
 
         assists.push(Assist {
             id: AssistId("typed-hole", AssistKind::QuickFix),
@@ -70,7 +70,7 @@ pub fn fixes(sema: &Semantics<'_, RootDatabase>, d: &hir::TypedHole) -> Option<V
             trigger_signature_help: false,
         });
     }
-    // dbg!(&assists.iter().map(|a| a.label.to_string()).collect::<Vec<_>>());
+    dbg!(&assists.iter().map(|a| a.label.to_string()).collect::<Vec<_>>());
     if !assists.is_empty() {
         Some(assists)
     } else {

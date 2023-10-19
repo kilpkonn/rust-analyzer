@@ -3,7 +3,7 @@ use itertools::Itertools;
 use rustc_hash::FxHashSet;
 
 use crate::{
-    Const, ConstParam, Field, Function, Impl, Local, Module, ModuleDef, ScopeDef, Semantics,
+    Adt, Const, ConstParam, Field, Function, Impl, Local, Module, ModuleDef, ScopeDef, Semantics,
     Static, Struct, StructKind, Type, Variant,
 };
 
@@ -48,9 +48,18 @@ impl TypeInhabitant {
                     Some(it) => it.display(db).to_string(),
                     None => String::from("_"),
                 };
+                if items_in_scope.contains(&ScopeDef::ModuleDef(ModuleDef::Const(*it))) {
+                    return name;
+                }
                 (name, it.module(db))
             }
-            TypeInhabitant::Static(it) => (it.name(db).display(db).to_string(), it.module(db)),
+            TypeInhabitant::Static(it) => {
+                let name = it.name(db).display(db).to_string();
+                if items_in_scope.contains(&ScopeDef::ModuleDef(ModuleDef::Static(*it))) {
+                    return name;
+                }
+                (name, it.module(db))
+            }
             TypeInhabitant::Local(it) => return it.name(db).display(db).to_string(),
             TypeInhabitant::ConstParam(it) => return it.name(db).display(db).to_string(),
             TypeInhabitant::SelfParam(_) => return String::from("self"),
@@ -111,6 +120,9 @@ impl TypeTransformation {
                     let args =
                         params.iter().map(|f| f.gen_source_code(items_in_scope, sema)).join(", ");
                     let sig = format!("{}({})", it.name(db).display(db).to_string(), args);
+                    if items_in_scope.contains(&ScopeDef::ModuleDef(ModuleDef::Function(*it))) {
+                        return sig;
+                    }
                     format!("{}{}", gen_module_prefix(it.module(db), items_in_scope, db), sig)
                 }
             }
@@ -143,11 +155,14 @@ impl TypeTransformation {
                 if items_in_scope.contains(&ScopeDef::ModuleDef(ModuleDef::Variant(*variant))) {
                     inner
                 } else {
-                    let sig = format!(
-                        "{}::{}",
-                        variant.parent_enum(db).name(db).display(db).to_string(),
-                        inner,
-                    );
+                    let parent_enum = variant.parent_enum(db);
+                    let sig =
+                        format!("{}::{}", parent_enum.name(db).display(db).to_string(), inner,);
+                    if items_in_scope
+                        .contains(&ScopeDef::ModuleDef(ModuleDef::Adt(Adt::Enum(parent_enum))))
+                    {
+                        return sig;
+                    }
                     format!("{}{}", gen_module_prefix(variant.module(db), items_in_scope, db), sig)
                 }
             }
@@ -165,6 +180,10 @@ impl TypeTransformation {
                     })
                     .join(", ");
                 let sig = format!("{} {{ {} }}", it.name(db).display(db).to_string(), args);
+                if items_in_scope.contains(&ScopeDef::ModuleDef(ModuleDef::Adt(Adt::Struct(*it)))) {
+                    return sig;
+                }
+
                 format!("{}{}", gen_module_prefix(it.module(db), items_in_scope, db), sig)
             }
             Self::Field(it) => {
