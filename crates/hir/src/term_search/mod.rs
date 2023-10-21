@@ -9,6 +9,8 @@ use crate::{Adt, AssocItem, GenericParam, Impl, ModuleDef, ScopeDef, Type};
 pub mod type_tree;
 pub use type_tree::{TypeInhabitant, TypeTransformation, TypeTree};
 
+mod tactics;
+
 pub fn term_search(
     goal: &Type,
     defs: &FxHashSet<ScopeDef>,
