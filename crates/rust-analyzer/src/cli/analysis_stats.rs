@@ -330,8 +330,6 @@ impl flags::AnalysisStats {
         mut file_ids: Vec<FileId>,
         verbosity: Verbosity,
     ) {
-        let no_progress = &|_| ();
-
         let mut cargo_config = CargoConfig::default();
         cargo_config.sysroot = match self.no_sysroot {
             true => None,
@@ -434,10 +432,12 @@ impl flags::AnalysisStats {
 
                     std::fs::write(&path, txt).unwrap();
 
-                    let res = ws.run_build_scripts(&cargo_config, no_progress).unwrap();
+                    let res = ws.run_build_scripts(&cargo_config, &|_| ()).unwrap();
                     if let Some(err) = res.error() {
-                        acc.errors += 1;
-                        println!("\n{}", err);
+                        if err.contains("error: could not compile") {
+                            acc.errors += 1;
+                        }
+                        bar.println(format!("Err here >>>>\n{}", err));
                     }
                 }
 
@@ -463,13 +463,13 @@ impl flags::AnalysisStats {
             bar.inc(1);
         }
         bar.println(format!(
-            "Tail Expr syntatix hits: {}/{} ({})%",
+            "Tail Expr syntactic hits: {}/{} ({}%)",
             acc.tail_expr_syntax_hits,
             acc.total_tail_exprs,
             percentage(acc.tail_expr_syntax_hits, acc.total_tail_exprs)
         ));
         bar.println(format!(
-            "Tail Exprs found: {}/{} ({})%",
+            "Tail Exprs found: {}/{} ({}%)",
             acc.total_tail_exprs - acc.tail_expr_no_term,
             acc.total_tail_exprs,
             percentage(acc.total_tail_exprs - acc.tail_expr_no_term, acc.total_tail_exprs)
