@@ -11,6 +11,33 @@ pub use type_tree::{TypeInhabitant, TypeTransformation, TypeTree};
 
 mod tactics;
 
+/// Lookup table for term search
+///
+/// Structure is (Type, TypeTrees) where `TypeTrees` is a `Vec<TypeTree>` that all unify with the
+/// type give in Type.
+struct LookupTable(Vec<(Type, Vec<TypeTree>)>);
+
+impl LookupTable {
+    pub fn exists(&self, db: &dyn HirDatabase, ty: &Type) -> bool {
+        self.0.iter().any(|it| it.0.could_unify_with_normalized(db, ty))
+    }
+
+    pub fn find(&self, db: &dyn HirDatabase, ty: &Type) -> Option<Vec<TypeTree>> {
+        self.0
+            .iter()
+            .find(|(t, _)| t.could_unify_with_normalized(db, ty))
+            .map(|(_, tts)| tts)
+            .cloned()
+    }
+
+    pub fn insert(&mut self, db: &dyn HirDatabase, ty: Type, trees: Vec<TypeTree>) {
+        match self.0.iter().position(|it| it.0.could_unify_with_normalized(db, &ty)) {
+            Some(pos) => self.0[pos].1.extend(trees),
+            None => self.0.push((ty, trees)),
+        }
+    }
+}
+
 pub fn term_search(
     goal: &Type,
     defs: &FxHashSet<ScopeDef>,
