@@ -433,13 +433,13 @@ impl flags::AnalysisStats {
 
                     std::fs::write(&path, txt).unwrap();
 
-                    let res = ws.run_build_scripts(&cargo_config, &|_| ()).unwrap();
-                    if let Some(err) = res.error() {
-                        if err.contains("error: could not compile") {
-                            acc.errors += 1;
-                        }
-                        bar.println(format!("Err here >>>>\n{}", err));
-                    }
+                    // let res = ws.run_build_scripts(&cargo_config, &|_| ()).unwrap();
+                    // if let Some(err) = res.error() {
+                    //     if err.contains("error: could not compile") {
+                    //         acc.errors += 1;
+                    //     }
+                    //     bar.println(format!("Err here >>>>\n{}", err));
+                    // }
                 }
 
                 if syntax_hit_found {

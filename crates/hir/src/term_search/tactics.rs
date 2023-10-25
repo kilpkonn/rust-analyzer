@@ -8,7 +8,7 @@ use crate::{
 
 use crate::term_search::{TypeInhabitant, TypeTransformation, TypeTree};
 
-use super::LookupTable;
+use super::{LookupTable, MAX_VARIATIONS};
 
 /// Trivial tactic
 ///
@@ -39,7 +39,7 @@ pub(super) fn trivial<'a>(
         })
         .filter_map(|it| {
             let ty = it.ty(db);
-            lookup.insert(db, ty.clone(), vec![it.clone()]);
+            lookup.insert(db, ty.clone(), std::iter::once(it.clone()));
 
             ty.could_unify_with_normalized(db, goal).then(|| it)
         })
@@ -88,6 +88,7 @@ pub(super) fn type_constructor<'a>(
             param_trees
                 .into_iter()
                 .multi_cartesian_product()
+                .take(MAX_VARIATIONS)
                 .map(|params| TypeTree::TypeTransformation {
                     func: TypeTransformation::Variant(variant),
                     params,
@@ -95,7 +96,7 @@ pub(super) fn type_constructor<'a>(
                 .collect()
         };
 
-        lookup.insert(db, enum_ty.clone(), variant_trees.clone());
+        lookup.insert(db, enum_ty.clone(), variant_trees.iter().cloned());
         variant_trees
     }
 
@@ -144,6 +145,7 @@ pub(super) fn type_constructor<'a>(
                     param_trees
                         .into_iter()
                         .multi_cartesian_product()
+                        .take(MAX_VARIATIONS)
                         .map(|params| TypeTree::TypeTransformation {
                             func: TypeTransformation::Struct(*it),
                             params,
@@ -151,7 +153,7 @@ pub(super) fn type_constructor<'a>(
                         .collect()
                 };
 
-                lookup.insert(db, struct_ty.clone(), struct_trees.clone());
+                lookup.insert(db, struct_ty.clone(), struct_trees.iter().cloned());
                 Some((struct_ty, struct_trees))
             }
             _ => None,
@@ -203,6 +205,7 @@ pub(super) fn free_function<'a>(
                     param_trees
                         .into_iter()
                         .multi_cartesian_product()
+                        .take(MAX_VARIATIONS)
                         .map(|params| TypeTree::TypeTransformation {
                             func: TypeTransformation::Function(*it),
                             params,
@@ -211,7 +214,7 @@ pub(super) fn free_function<'a>(
                 };
 
                 let ret_ty = it.ret_type(db);
-                lookup.insert(db, ret_ty.clone(), fn_trees.clone());
+                lookup.insert(db, ret_ty.clone(), fn_trees.iter().cloned());
                 Some((ret_ty, fn_trees))
             }
             _ => None,
@@ -267,6 +270,7 @@ pub(super) fn impl_method<'a>(
             let fn_trees: Vec<TypeTree> = std::iter::once(target_type_trees)
                 .chain(param_trees.into_iter())
                 .multi_cartesian_product()
+                .take(MAX_VARIATIONS)
                 .map(|params| TypeTree::TypeTransformation {
                     func: TypeTransformation::Function(it),
                     params,
@@ -274,7 +278,7 @@ pub(super) fn impl_method<'a>(
                 .collect();
 
             let ret_ty = it.ret_type(db);
-            lookup.insert(db, ret_ty.clone(), fn_trees.clone());
+            lookup.insert(db, ret_ty.clone(), fn_trees.iter().cloned());
             Some((ret_ty, fn_trees))
         })
         .filter_map(|(ty, trees)| ty.could_unify_with_normalized(db, goal).then(|| trees))
