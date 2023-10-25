@@ -8,6 +8,7 @@ use ide_db::{
     source_change::SourceChange,
     FxHashSet, RootDatabase,
 };
+use itertools::Itertools;
 use text_edit::TextEdit;
 
 use crate::{Diagnostic, DiagnosticCode, DiagnosticsContext};
@@ -51,11 +52,10 @@ pub fn fixes(sema: &Semantics<'_, RootDatabase>, d: &hir::TypedHole) -> Option<V
         defs.insert(def);
     });
 
-    let mut paths = term_search(&d.expected, &defs, db);
-    paths.sort_by(|(d1, _), (d2, _)| d1.cmp(d2));
+    let paths = term_search(db, scope.module(), &defs, &d.expected);
 
     let mut assists = vec![];
-    for (_d, path) in paths {
+    for path in paths.into_iter().unique() {
         let code = path.gen_source_code(&defs, sema);
 
         assists.push(Assist {

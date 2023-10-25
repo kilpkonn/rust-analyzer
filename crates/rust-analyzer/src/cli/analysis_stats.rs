@@ -407,9 +407,10 @@ impl flags::AnalysisStats {
                     defs.insert(def);
                 });
 
-                let assists = hir::term_search::term_search(&target_ty.adjusted(), &defs, db);
+                let found_terms =
+                    hir::term_search::term_search(db, scope.module(), &defs, &target_ty.adjusted());
 
-                if assists.is_empty() {
+                if found_terms.is_empty() {
                     acc.tail_expr_no_term += 1;
                     acc.total_tail_exprs += 1;
                     // println!("\n{}\n", &original_text);
@@ -421,8 +422,8 @@ impl flags::AnalysisStats {
                 }
 
                 let mut syntax_hit_found = false;
-                for (_, assist) in assists {
-                    let generated = assist.gen_source_code(&defs, &sema);
+                for term in found_terms {
+                    let generated = term.gen_source_code(&defs, &sema);
                     syntax_hit_found |= trim(&original_text) == trim(&generated);
 
                     // Validate if type-checks

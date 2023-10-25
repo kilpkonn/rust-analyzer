@@ -6,7 +6,7 @@ use crate::{
     Adt, AssocItem, GenericParam, HasVisibility, Impl, Module, ModuleDef, ScopeDef, Type, Variant,
 };
 
-use crate::term_search::{TypeInhabitant, TypeTree};
+use crate::term_search::{TypeInhabitant, TypeTransformation, TypeTree};
 
 use super::LookupTable;
 
@@ -50,14 +50,14 @@ pub(super) fn trivial<'a>(
 /// Attempts different type constructors for enums and structs in scope
 ///
 /// # Arguments
-/// * `module` - Module where the term search target location
 /// * `db` - HIR database
+/// * `module` - Module where the term search target location
 /// * `defs` - Set of items in scope at term search target location
 /// * `lookup` - Lookup table for types
 /// * `goal` - Term search target type
 pub(super) fn type_constructor<'a>(
-    module: &'a Module,
     db: &'a dyn HirDatabase,
+    module: &'a Module,
     defs: &'a FxHashSet<ScopeDef>,
     lookup: &'a mut LookupTable,
     goal: &'a Type,
@@ -77,14 +77,23 @@ pub(super) fn type_constructor<'a>(
             None => return Vec::new(),
         };
 
-        let variant_trees: Vec<TypeTree> = param_trees
-            .into_iter()
-            .multi_cartesian_product()
-            .map(|params| TypeTree::TypeTransformation {
-                func: super::TypeTransformation::Variant(variant),
-                params,
-            })
-            .collect();
+        // Note that we need special case for 0 param constructors because of multi cartesian
+        // product
+        let variant_trees: Vec<TypeTree> = if param_trees.is_empty() {
+            vec![TypeTree::TypeTransformation {
+                func: TypeTransformation::Variant(variant),
+                params: Vec::new(),
+            }]
+        } else {
+            param_trees
+                .into_iter()
+                .multi_cartesian_product()
+                .map(|params| TypeTree::TypeTransformation {
+                    func: TypeTransformation::Variant(variant),
+                    params,
+                })
+                .collect()
+        };
 
         lookup.insert(db, enum_ty.clone(), variant_trees.clone());
         variant_trees
@@ -118,23 +127,29 @@ pub(super) fn type_constructor<'a>(
                     return None;
                 }
 
-                let param_trees: Option<Vec<Vec<TypeTree>>> =
-                    fileds.into_iter().map(|field| lookup.find(db, &field.ty(db))).collect();
-
-                // Check if all fields can be completed from lookup table
-                let param_trees = match param_trees {
-                    Some(it) => it,
-                    None => return None,
-                };
-
-                let struct_trees: Vec<TypeTree> = param_trees
+                // Early exit if some param cannot be filled from lookup
+                let param_trees: Vec<Vec<TypeTree>> = fileds
                     .into_iter()
-                    .multi_cartesian_product()
-                    .map(|params| TypeTree::TypeTransformation {
-                        func: super::TypeTransformation::Struct(*it),
-                        params,
-                    })
-                    .collect();
+                    .map(|field| lookup.find(db, &field.ty(db)))
+                    .collect::<Option<_>>()?;
+
+                // Note that we need special case for 0 param constructors because of multi cartesian
+                // product
+                let struct_trees: Vec<TypeTree> = if param_trees.is_empty() {
+                    vec![TypeTree::TypeTransformation {
+                        func: TypeTransformation::Struct(*it),
+                        params: Vec::new(),
+                    }]
+                } else {
+                    param_trees
+                        .into_iter()
+                        .multi_cartesian_product()
+                        .map(|params| TypeTree::TypeTransformation {
+                            func: TypeTransformation::Struct(*it),
+                            params,
+                        })
+                        .collect()
+                };
 
                 lookup.insert(db, struct_ty.clone(), struct_trees.clone());
                 Some((struct_ty, struct_trees))
@@ -150,14 +165,14 @@ pub(super) fn type_constructor<'a>(
 /// Attempts to call different functions in scope with parameters from lookup table
 ///
 /// # Arguments
-/// * `module` - Module where the term search target location
 /// * `db` - HIR database
+/// * `module` - Module where the term search target location
 /// * `defs` - Set of items in scope at term search target location
 /// * `lookup` - Lookup table for types
 /// * `goal` - Term search target type
 pub(super) fn free_function<'a>(
-    module: &'a Module,
     db: &'a dyn HirDatabase,
+    module: &'a Module,
     defs: &'a FxHashSet<ScopeDef>,
     lookup: &'a mut LookupTable,
     goal: &'a Type,
@@ -170,18 +185,30 @@ pub(super) fn free_function<'a>(
                     return None;
                 }
 
-                let fn_trees: Vec<TypeTree> = it
-                    .assoc_fn_params(db)
+                // Early exit if some param cannot be filled from lookup
+                let param_trees: Vec<Vec<TypeTree>> = it
+                    .params_without_self(db)
                     .into_iter()
                     .map(|field| lookup.find(db, &field.ty()))
-                    .collect::<Option<Vec<_>>>()? // Brake if cannot be completed from lookup
-                    .into_iter()
-                    .multi_cartesian_product()
-                    .map(|params| TypeTree::TypeTransformation {
-                        func: super::TypeTransformation::Function(*it),
-                        params,
-                    })
-                    .collect();
+                    .collect::<Option<_>>()?;
+
+                // Note that we need special case for 0 param constructors because of multi cartesian
+                // product
+                let fn_trees: Vec<TypeTree> = if param_trees.is_empty() {
+                    vec![TypeTree::TypeTransformation {
+                        func: TypeTransformation::Function(*it),
+                        params: Vec::new(),
+                    }]
+                } else {
+                    param_trees
+                        .into_iter()
+                        .multi_cartesian_product()
+                        .map(|params| TypeTree::TypeTransformation {
+                            func: TypeTransformation::Function(*it),
+                            params,
+                        })
+                        .collect()
+                };
 
                 let ret_ty = it.ret_type(db);
                 lookup.insert(db, ret_ty.clone(), fn_trees.clone());
@@ -199,14 +226,14 @@ pub(super) fn free_function<'a>(
 /// This includes both functions from direct impl blocks as well as functions from traits.
 ///
 /// # Arguments
-/// * `module` - Module where the term search target location
 /// * `db` - HIR database
+/// * `module` - Module where the term search target location
 /// * `defs` - Set of items in scope at term search target location
 /// * `lookup` - Lookup table for types
 /// * `goal` - Term search target type
 pub(super) fn impl_method<'a>(
-    module: &'a Module,
     db: &'a dyn HirDatabase,
+    module: &'a Module,
     _defs: &'a FxHashSet<ScopeDef>,
     lookup: &'a mut LookupTable,
     goal: &'a Type,
@@ -230,6 +257,7 @@ pub(super) fn impl_method<'a>(
 
             let target_type_trees = lookup.find(db, &ty).expect("Type not in lookup");
 
+            // Early exit if some param cannot be filled from lookup
             let param_trees: Vec<Vec<TypeTree>> = it
                 .params_without_self(db)
                 .into_iter()
@@ -240,7 +268,7 @@ pub(super) fn impl_method<'a>(
                 .chain(param_trees.into_iter())
                 .multi_cartesian_product()
                 .map(|params| TypeTree::TypeTransformation {
-                    func: super::TypeTransformation::Function(it),
+                    func: TypeTransformation::Function(it),
                     params,
                 })
                 .collect();
