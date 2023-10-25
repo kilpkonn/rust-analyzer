@@ -142,3 +142,42 @@ pub(super) fn type_constructor<'a>(
         .filter_map(|(ty, trees)| ty.could_unify_with_normalized(db, goal).then(|| trees))
         .flatten()
 }
+
+pub(super) fn free_function<'a>(
+    module: &'a Module,
+    db: &'a dyn HirDatabase,
+    defs: &'a FxHashSet<ScopeDef>,
+    lookup: &'a mut LookupTable,
+    goal: &'a Type,
+) -> impl Iterator<Item = TypeTree> + 'a {
+    defs.iter()
+        .filter_map(|def| match def {
+            ScopeDef::ModuleDef(ModuleDef::Function(it)) => {
+                // Filter out private and unsafe functions
+                if !it.is_visible_from(db, *module) || it.is_unsafe_to_call(db) {
+                    return None;
+                }
+
+                let ret_ty = it.ret_type(db);
+
+                let fn_trees: Vec<TypeTree> = it
+                    .assoc_fn_params(db)
+                    .into_iter()
+                    .map(|field| lookup.find(db, &field.ty()))
+                    .collect::<Option<Vec<_>>>()? // Brake if cannot be completed from lookup
+                    .into_iter()
+                    .multi_cartesian_product()
+                    .map(|params| TypeTree::TypeTransformation {
+                        func: super::TypeTransformation::Function(*it),
+                        params,
+                    })
+                    .collect();
+
+                lookup.insert(db, ret_ty.clone(), fn_trees.clone());
+                Some((ret_ty, fn_trees))
+            }
+            _ => None,
+        })
+        .filter_map(|(ty, trees)| ty.could_unify_with_normalized(db, goal).then(|| trees))
+        .flatten()
+}
