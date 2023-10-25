@@ -242,7 +242,7 @@ pub(super) fn impl_method<'a>(
     goal: &'a Type,
 ) -> impl Iterator<Item = TypeTree> + 'a {
     lookup
-        .types()
+        .new_types()
         .into_iter()
         .flat_map(|ty| {
             Impl::all_for_type(db, ty.clone()).into_iter().map(move |imp| (ty.clone(), imp))

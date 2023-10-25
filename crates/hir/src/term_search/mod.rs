@@ -14,12 +14,12 @@ const MAX_VARIATIONS: usize = 10;
 struct LookupTable {
     // Use FxHashMap instead? not sure how to correctly hash Type tho
     data: Vec<(Type, FxHashSet<TypeTree>)>,
+    new_types: Vec<Type>,
 }
 
-// TODO: Add tracking for new types
 impl LookupTable {
     pub fn new() -> Self {
-        LookupTable { data: Default::default() }
+        LookupTable { data: Default::default(), new_types: Vec::new() }
     }
 
     pub fn find(&self, db: &dyn HirDatabase, ty: &Type) -> Option<Vec<TypeTree>> {
@@ -29,15 +29,23 @@ impl LookupTable {
             .map(|(_, tts)| tts.iter().cloned().collect())
     }
 
-    pub fn insert(&mut self, db: &dyn HirDatabase, ty: Type, trees: impl Iterator<Item = TypeTree>) {
+    pub fn insert(
+        &mut self,
+        db: &dyn HirDatabase,
+        ty: Type,
+        trees: impl Iterator<Item = TypeTree>,
+    ) {
         match self.data.iter().position(|it| it.0.could_unify_with_normalized(db, &ty)) {
             Some(pos) => self.data[pos].1.extend(trees.take(MAX_VARIATIONS)),
-            None => self.data.push((ty, trees.take(MAX_VARIATIONS).collect())),
+            None => {
+                self.data.push((ty.clone(), trees.take(MAX_VARIATIONS).collect()));
+                self.new_types.push(ty);
+            }
         }
     }
 
-    pub fn types(&self) -> Vec<Type> {
-        self.data.iter().map(|(ty, _)| ty.clone()).collect()
+    pub fn new_types(&mut self) -> Vec<Type> {
+        std::mem::take(&mut self.new_types)
     }
 }
 
