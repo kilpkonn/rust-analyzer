@@ -17,6 +17,8 @@ mod tactics;
 /// type give in Type.
 struct LookupTable(Vec<(Type, Vec<TypeTree>)>);
 
+// TODO: Add tracking for new types
+// TODO: Figure out how to avoid duplicates
 impl LookupTable {
     pub fn exists(&self, db: &dyn HirDatabase, ty: &Type) -> bool {
         self.0.iter().any(|it| it.0.could_unify_with_normalized(db, ty))
@@ -35,6 +37,14 @@ impl LookupTable {
             Some(pos) => self.0[pos].1.extend(trees),
             None => self.0.push((ty, trees)),
         }
+    }
+
+    pub fn iter_types<'a>(&'a self) -> impl Iterator<Item = &'a Type> {
+        self.0.iter().map(|(ty, _)| ty)
+    }
+
+    pub fn types(&self) -> Vec<Type> {
+        self.0.iter().map(|(ty, _)| ty.clone()).collect()
     }
 }
 

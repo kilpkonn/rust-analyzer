@@ -2,7 +2,9 @@ use hir_ty::db::HirDatabase;
 use itertools::Itertools;
 use rustc_hash::FxHashSet;
 
-use crate::{Adt, GenericParam, HasVisibility, Module, ModuleDef, ScopeDef, Type, Variant};
+use crate::{
+    Adt, AssocItem, GenericParam, HasVisibility, Impl, Module, ModuleDef, ScopeDef, Type, Variant,
+};
 
 use crate::term_search::{TypeInhabitant, TypeTree};
 
@@ -143,6 +145,16 @@ pub(super) fn type_constructor<'a>(
         .flatten()
 }
 
+/// Free function tactic
+///
+/// Attempts to call different functions in scope with parameters from lookup table
+///
+/// # Arguments
+/// * `module` - Module where the term search target location
+/// * `db` - HIR database
+/// * `defs` - Set of items in scope at term search target location
+/// * `lookup` - Lookup table for types
+/// * `goal` - Term search target type
 pub(super) fn free_function<'a>(
     module: &'a Module,
     db: &'a dyn HirDatabase,
@@ -158,8 +170,6 @@ pub(super) fn free_function<'a>(
                     return None;
                 }
 
-                let ret_ty = it.ret_type(db);
-
                 let fn_trees: Vec<TypeTree> = it
                     .assoc_fn_params(db)
                     .into_iter()
@@ -173,10 +183,71 @@ pub(super) fn free_function<'a>(
                     })
                     .collect();
 
+                let ret_ty = it.ret_type(db);
                 lookup.insert(db, ret_ty.clone(), fn_trees.clone());
                 Some((ret_ty, fn_trees))
             }
             _ => None,
+        })
+        .filter_map(|(ty, trees)| ty.could_unify_with_normalized(db, goal).then(|| trees))
+        .flatten()
+}
+
+/// Impl method tactic
+///
+/// Attempts to to call methods on types from lookup table.
+/// This includes both functions from direct impl blocks as well as functions from traits.
+///
+/// # Arguments
+/// * `module` - Module where the term search target location
+/// * `db` - HIR database
+/// * `defs` - Set of items in scope at term search target location
+/// * `lookup` - Lookup table for types
+/// * `goal` - Term search target type
+pub(super) fn impl_method<'a>(
+    module: &'a Module,
+    db: &'a dyn HirDatabase,
+    _defs: &'a FxHashSet<ScopeDef>,
+    lookup: &'a mut LookupTable,
+    goal: &'a Type,
+) -> impl Iterator<Item = TypeTree> + 'a {
+    lookup
+        .types()
+        .into_iter()
+        .flat_map(|ty| {
+            Impl::all_for_type(db, ty.clone()).into_iter().map(move |imp| (ty.clone(), imp))
+        })
+        .flat_map(|(ty, imp)| imp.items(db).into_iter().map(move |item| (ty.clone(), item)))
+        .filter_map(|(ty, it)| match it {
+            AssocItem::Function(f) => Some((ty, f)),
+            _ => None,
+        })
+        .filter_map(|(ty, it)| {
+            // Filter out private and unsafe functions
+            if !it.is_visible_from(db, *module) || it.is_unsafe_to_call(db) {
+                return None;
+            }
+
+            let target_type_trees = lookup.find(db, &ty).expect("Type not in lookup");
+
+            let param_trees: Vec<Vec<TypeTree>> = it
+                .params_without_self(db)
+                .into_iter()
+                .map(|field| lookup.find(db, &field.ty()))
+                .collect::<Option<_>>()?;
+
+            let fn_trees: Vec<TypeTree> = std::iter::once(target_type_trees)
+                .chain(param_trees.into_iter())
+                .multi_cartesian_product()
+                .map(|params| TypeTree::TypeTransformation {
+                    func: super::TypeTransformation::Function(it),
+                    params,
+                })
+                .collect();
+
+            let ret_ty = it.ret_type(db);
+            lookup.insert(db, ret_ty.clone(), fn_trees.clone());
+            Some((ret_ty, fn_trees))
         })
         .filter_map(|(ty, trees)| ty.could_unify_with_normalized(db, goal).then(|| trees))
         .flatten()
