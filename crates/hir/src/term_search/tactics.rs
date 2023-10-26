@@ -8,7 +8,7 @@ use crate::{
 
 use crate::term_search::{TypeInhabitant, TypeTransformation, TypeTree};
 
-use super::{LookupTable, MAX_VARIATIONS};
+use super::{LookupTable, MAX_VARIATIONS, NewTypesKey};
 
 /// Trivial tactic
 ///
@@ -250,7 +250,7 @@ pub(super) fn impl_method<'a>(
     goal: &'a Type,
 ) -> impl Iterator<Item = TypeTree> + 'a {
     lookup
-        .new_types()
+        .new_types(NewTypesKey::ImplMethod)
         .into_iter()
         .flat_map(|ty| {
             Impl::all_for_type(db, ty.clone()).into_iter().map(move |imp| (ty.clone(), imp))
@@ -316,7 +316,7 @@ pub(super) fn struct_projection<'a>(
     goal: &'a Type,
 ) -> impl Iterator<Item = TypeTree> + 'a {
     lookup
-        .new_types()
+        .new_types(NewTypesKey::StructProjection)
         .into_iter()
         .map(|ty| (ty.clone(), lookup.find(db, &ty).expect("TypeTree not in lookup")))
         .flat_map(|(ty, targets)| {

@@ -1,6 +1,6 @@
 use hir::{ModuleDef, ScopeDef};
 use ide_db::{
-    assists::{AssistId, AssistKind},
+    assists::{AssistId, AssistKind, GroupLabel},
     FxHashSet,
 };
 
@@ -22,7 +22,6 @@ pub(crate) fn term_search(acc: &mut Assists, ctx: &AssistContext<'_>) -> Option<
     }
 
     let parent = syntax.parent()?;
-    dbg!(ast::Expr::cast(parent.clone()), ctx.sema.type_of_expr(&ast::Expr::cast(parent.clone())?));
     let target_ty = ctx.sema.type_of_expr(&ast::Expr::cast(parent.clone())?)?.adjusted();
 
     let scope = ctx.sema.scope(&parent)?;
@@ -44,7 +43,8 @@ pub(crate) fn term_search(acc: &mut Assists, ctx: &AssistContext<'_>) -> Option<
     }
 
     for path in paths.iter().unique() {
-        acc.add(
+        acc.add_group(
+            &GroupLabel(String::from("term_search")),
             AssistId("term_search", AssistKind::Generate),
             "Term search",
             goal_range,
@@ -59,17 +59,40 @@ pub(crate) fn term_search(acc: &mut Assists, ctx: &AssistContext<'_>) -> Option<
 
 #[cfg(test)]
 mod tests {
-    // use crate::tests::check_assist;
+    use crate::tests::check_assist;
 
-    // use super::*;
+    use super::*;
 
     #[test]
     fn test_complete_local() {
-        // BUG: Macro expansion fails causing no target type
-        // check_assist(
-        //     term_search,
-        //     "fn foo() -> u128 { let i: u128 = 1; todo$0!() }",
-        //     "fn foo() -> u128 { let i: u128 = 1; i }",
-        // )
+        check_assist(
+            term_search,
+            "macro_rules! todo { () => (!) }; fn f() { let a: u128 = 1; let b: u128 = todo$0!() }",
+            "macro_rules! todo { () => (!) }; fn f() { let a: u128 = 1; let b: u128 = a }",
+        )
     }
+
+    #[test]
+    fn test_complete_todo_with_msg() {
+        check_assist(
+            term_search,
+            "macro_rules! todo { ($($arg:tt)+) => (!) }; fn f() { let a: u128 = 1; let b: u128 = todo$0!(\"asd\") }",
+            "macro_rules! todo { ($($arg:tt)+) => (!) }; fn f() { let a: u128 = 1; let b: u128 = a }",
+        )
+    }
+
+    #[test]
+    fn test_complete_struct_field() {
+        check_assist(
+            term_search,
+            r#"macro_rules! todo { () => (!) };
+            struct A { pub x: i32, y: bool }
+            fn f() { let a = A { x: 1, y: true }; let b: i32 = todo$0!(); }"#,
+            r#"macro_rules! todo { () => (!) };
+            struct A { pub x: i32, y: bool }
+            fn f() { let a = A { x: 1, y: true }; let b: i32 = a.x; }"#,
+        )
+    }
+
+
 }

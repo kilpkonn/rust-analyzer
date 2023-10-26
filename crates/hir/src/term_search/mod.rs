@@ -10,12 +10,18 @@ mod tactics;
 
 const MAX_VARIATIONS: usize = 10;
 
+#[derive(Debug, Hash, PartialEq, Eq)]
+enum NewTypesKey {
+    ImplMethod,
+    StructProjection,
+}
+
 /// Lookup table for term search
 #[derive(Default, Debug)]
 struct LookupTable {
     // Use FxHashMap instead? not sure how to correctly hash Type tho
     data: Vec<(Type, FxHashSet<TypeTree>)>,
-    new_types: Vec<Type>,
+    new_types: FxHashMap<NewTypesKey, Vec<Type>>,
     exhausted_scopedefs: FxHashSet<ScopeDef>,
     round_scopedef_hits: FxHashSet<ScopeDef>,
     scopedef_hits: FxHashMap<ScopeDef, u32>,
@@ -23,7 +29,10 @@ struct LookupTable {
 
 impl LookupTable {
     pub fn new() -> Self {
-        Default::default()
+        let mut res: Self = Default::default();
+        res.new_types.insert(NewTypesKey::ImplMethod, Vec::new());
+        res.new_types.insert(NewTypesKey::StructProjection, Vec::new());
+        res
     }
 
     pub fn find(&self, db: &dyn HirDatabase, ty: &Type) -> Option<Vec<TypeTree>> {
@@ -43,13 +52,18 @@ impl LookupTable {
             Some(pos) => self.data[pos].1.extend(trees.take(MAX_VARIATIONS)),
             None => {
                 self.data.push((ty.clone(), trees.take(MAX_VARIATIONS).collect()));
-                self.new_types.push(ty);
+                for it in self.new_types.values_mut() {
+                    it.push(ty.clone());
+                }
             }
         }
     }
 
-    pub fn new_types(&mut self) -> Vec<Type> {
-        std::mem::take(&mut self.new_types)
+    pub fn new_types(&mut self, key: NewTypesKey) -> Vec<Type> {
+        match self.new_types.get_mut(&key) {
+            Some(it) => std::mem::take(it),
+            None => Vec::new(),
+        }
     }
 
     pub fn mark_exhausted(&mut self, def: ScopeDef) {
