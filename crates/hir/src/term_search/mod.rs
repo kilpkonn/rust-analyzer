@@ -88,12 +88,13 @@ pub fn term_search(
     let mut solutions: Vec<TypeTree> = tactics::trivial(db, &defs, &mut lookup, goal).collect();
     let mut solution_found = !solutions.is_empty();
 
-    for _ in 0..3 {
+    for _ in 0..5 {
         lookup.new_round();
 
         solutions.extend(tactics::type_constructor(db, &module, &defs, &mut lookup, goal));
         solutions.extend(tactics::free_function(db, &module, &defs, &mut lookup, goal));
         solutions.extend(tactics::impl_method(db, &module, &defs, &mut lookup, goal));
+        solutions.extend(tactics::struct_projection(db, &module, &defs, &mut lookup, goal));
 
         if solution_found {
             break;

@@ -297,3 +297,38 @@ pub(super) fn impl_method<'a>(
         .filter_map(|(ty, trees)| ty.could_unify_with_normalized(db, goal).then(|| trees))
         .flatten()
 }
+
+/// Struct projection tactic
+///
+/// Attempts different struct fields
+///
+/// # Arguments
+/// * `db` - HIR database
+/// * `module` - Module where the term search target location
+/// * `defs` - Set of items in scope at term search target location
+/// * `lookup` - Lookup table for types
+/// * `goal` - Term search target type
+pub(super) fn struct_projection<'a>(
+    db: &'a dyn HirDatabase,
+    _module: &'a Module,
+    _defs: &'a FxHashSet<ScopeDef>,
+    lookup: &'a mut LookupTable,
+    goal: &'a Type,
+) -> impl Iterator<Item = TypeTree> + 'a {
+    lookup
+        .new_types()
+        .into_iter()
+        .map(|ty| (ty.clone(), lookup.find(db, &ty).expect("TypeTree not in lookup")))
+        .flat_map(|(ty, targets)| {
+            ty.fields(db).into_iter().map(move |(field, filed_ty)| {
+                let trees =
+                    targets.clone().into_iter().map(move |target| TypeTree::TypeTransformation {
+                        func: TypeTransformation::Field(field),
+                        params: vec![target],
+                    });
+                (filed_ty, trees)
+            })
+        })
+        .filter_map(|(ty, trees)| ty.could_unify_with_normalized(db, goal).then(|| trees))
+        .flatten()
+}
