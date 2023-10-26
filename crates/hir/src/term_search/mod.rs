@@ -1,5 +1,5 @@
 use hir_ty::db::HirDatabase;
-use rustc_hash::{FxHashSet, FxHashMap};
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::{Module, ScopeDef, Type};
 
