@@ -52,7 +52,7 @@ pub fn fixes(sema: &Semantics<'_, RootDatabase>, d: &hir::TypedHole) -> Option<V
         defs.insert(def);
     });
 
-    let paths = term_search(db, scope.module(), &defs, &d.expected);
+    let paths = term_search(db, scope.module(), defs.clone(), &d.expected);
 
     let mut assists = vec![];
     for path in paths.into_iter().unique() {

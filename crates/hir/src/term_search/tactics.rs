@@ -20,8 +20,8 @@ pub(super) fn trivial<'a>(
     lookup: &'a mut LookupTable,
     goal: &'a Type,
 ) -> impl Iterator<Item = TypeTree> + 'a {
-    defs.iter()
-        .filter_map(|def| match def {
+    defs.iter().filter_map(|def| {
+        let tt = match def {
             ScopeDef::ModuleDef(ModuleDef::Const(it)) => {
                 Some(TypeTree::TypeInhabitant(TypeInhabitant::Const(*it)))
             }
@@ -36,13 +36,15 @@ pub(super) fn trivial<'a>(
                 Some(TypeTree::TypeInhabitant(TypeInhabitant::SelfParam(*it)))
             }
             _ => None,
-        })
-        .filter_map(|it| {
-            let ty = it.ty(db);
-            lookup.insert(db, ty.clone(), std::iter::once(it.clone()));
+        }?;
 
-            ty.could_unify_with_normalized(db, goal).then(|| it)
-        })
+        lookup.mark_exhausted(*def);
+
+        let ty = tt.ty(db);
+        lookup.insert(db, ty.clone(), std::iter::once(tt.clone()));
+
+        ty.could_unify_with_normalized(db, goal).then(|| tt)
+    })
 }
 
 /// Type constructor tactic
@@ -67,15 +69,13 @@ pub(super) fn type_constructor<'a>(
         lookup: &mut LookupTable,
         enum_ty: Type,
         variant: Variant,
-    ) -> Vec<TypeTree> {
-        let param_trees: Option<Vec<Vec<TypeTree>>> =
-            variant.fields(db).into_iter().map(|field| lookup.find(db, &field.ty(db))).collect();
-
-        // Check if all fields can be completed from lookup table
-        let param_trees = match param_trees {
-            Some(it) => it,
-            None => return Vec::new(),
-        };
+    ) -> Option<Vec<TypeTree>> {
+        // Early exit if some param cannot be filled from lookup
+        let param_trees: Vec<Vec<TypeTree>> = variant
+            .fields(db)
+            .into_iter()
+            .map(|field| lookup.find(db, &field.ty(db)))
+            .collect::<Option<_>>()?;
 
         // Note that we need special case for 0 param constructors because of multi cartesian
         // product
@@ -97,7 +97,7 @@ pub(super) fn type_constructor<'a>(
         };
 
         lookup.insert(db, enum_ty.clone(), variant_trees.iter().cloned());
-        variant_trees
+        Some(variant_trees)
     }
 
     defs.iter()
@@ -105,17 +105,23 @@ pub(super) fn type_constructor<'a>(
             ScopeDef::ModuleDef(ModuleDef::Variant(it)) => {
                 let enum_ty = it.parent_enum(db).ty(db);
 
-                let variant_trees = variant_helper(db, lookup, enum_ty.clone(), *it);
+                let variant_trees = variant_helper(db, lookup, enum_ty.clone(), *it)?;
+                lookup.mark_fulfilled(ScopeDef::ModuleDef(ModuleDef::Variant(*it)));
                 Some((enum_ty, variant_trees))
             }
             ScopeDef::ModuleDef(ModuleDef::Adt(Adt::Enum(it))) => {
                 let enum_ty = it.ty(db);
 
-                let trees = it
+                let trees: Vec<TypeTree> = it
                     .variants(db)
                     .into_iter()
-                    .flat_map(|it| variant_helper(db, lookup, enum_ty.clone(), it))
+                    .filter_map(|it| variant_helper(db, lookup, enum_ty.clone(), it))
+                    .flatten()
                     .collect();
+
+                if !trees.is_empty() {
+                    lookup.mark_fulfilled(ScopeDef::ModuleDef(ModuleDef::Adt(Adt::Enum(*it))));
+                }
 
                 Some((enum_ty, trees))
             }
@@ -153,6 +159,7 @@ pub(super) fn type_constructor<'a>(
                         .collect()
                 };
 
+                lookup.mark_fulfilled(ScopeDef::ModuleDef(ModuleDef::Adt(Adt::Struct(*it))));
                 lookup.insert(db, struct_ty.clone(), struct_trees.iter().cloned());
                 Some((struct_ty, struct_trees))
             }
@@ -214,6 +221,7 @@ pub(super) fn free_function<'a>(
                 };
 
                 let ret_ty = it.ret_type(db);
+                lookup.mark_fulfilled(ScopeDef::ModuleDef(ModuleDef::Function(*it)));
                 lookup.insert(db, ret_ty.clone(), fn_trees.iter().cloned());
                 Some((ret_ty, fn_trees))
             }
@@ -258,6 +266,12 @@ pub(super) fn impl_method<'a>(
                 return None;
             }
 
+            let ret_ty = it.ret_type(db);
+            // Ignore functions that do not change the type
+            if ty.could_unify_with_normalized(db, &ret_ty) {
+                return None;
+            }
+
             let target_type_trees = lookup.find(db, &ty).expect("Type not in lookup");
 
             // Early exit if some param cannot be filled from lookup
@@ -277,7 +291,6 @@ pub(super) fn impl_method<'a>(
                 })
                 .collect();
 
-            let ret_ty = it.ret_type(db);
             lookup.insert(db, ret_ty.clone(), fn_trees.iter().cloned());
             Some((ret_ty, fn_trees))
         })

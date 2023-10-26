@@ -355,6 +355,7 @@ impl flags::AnalysisStats {
 
         let mut acc: Acc = Default::default();
         bar.tick();
+        let mut sw = self.stop_watch();
 
         for &file_id in &file_ids {
             let sema = hir::Semantics::new(db);
@@ -407,8 +408,12 @@ impl flags::AnalysisStats {
                     defs.insert(def);
                 });
 
-                let found_terms =
-                    hir::term_search::term_search(db, scope.module(), &defs, &target_ty.adjusted());
+                let found_terms = hir::term_search::term_search(
+                    db,
+                    scope.module(),
+                    defs.clone(),
+                    &target_ty.adjusted(),
+                );
 
                 if found_terms.is_empty() {
                     acc.tail_expr_no_term += 1;
@@ -463,6 +468,8 @@ impl flags::AnalysisStats {
 
             bar.inc(1);
         }
+        let term_search_time = sw.elapsed();
+
         bar.println(format!(
             "Tail Expr syntactic hits: {}/{} ({}%)",
             acc.tail_expr_syntax_hits,
@@ -476,6 +483,12 @@ impl flags::AnalysisStats {
             percentage(acc.total_tail_exprs - acc.tail_expr_no_term, acc.total_tail_exprs)
         ));
         bar.println(format!("Tail Exprs errors: {}", acc.errors));
+        bar.println(format!(
+            "Term search avg time: {}ms",
+            term_search_time.time.as_millis() as u64 / acc.total_tail_exprs
+        ));
+        bar.println(format!("{:<20} {}", "Term search:", term_search_time));
+        report_metric("term search time", term_search_time.time.as_millis() as u64, "ms");
 
         bar.finish_and_clear();
     }
