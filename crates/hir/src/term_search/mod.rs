@@ -6,9 +6,12 @@ use crate::{Module, ScopeDef, Type};
 pub mod type_tree;
 pub use type_tree::{TypeInhabitant, TypeTransformation, TypeTree};
 
+use self::type_tree::QuantifiedTypeTree;
+
 mod tactics;
 
 const MAX_VARIATIONS: usize = 10;
+type TypeTrees = QuantifiedTypeTree<MAX_VARIATIONS>;
 
 #[derive(Debug, Hash, PartialEq, Eq)]
 enum NewTypesKey {
@@ -20,7 +23,7 @@ enum NewTypesKey {
 #[derive(Default, Debug)]
 struct LookupTable {
     // Use FxHashMap instead? not sure how to correctly hash Type tho
-    data: Vec<(Type, FxHashSet<TypeTree>)>,
+    data: Vec<(Type, TypeTrees)>,
     new_types: FxHashMap<NewTypesKey, Vec<Type>>,
     exhausted_scopedefs: FxHashSet<ScopeDef>,
     round_scopedef_hits: FxHashSet<ScopeDef>,
@@ -35,11 +38,11 @@ impl LookupTable {
         res
     }
 
-    pub fn find(&self, db: &dyn HirDatabase, ty: &Type) -> Option<Vec<TypeTree>> {
+    pub fn find(&self, db: &dyn HirDatabase, ty: &Type) -> Option<TypeTrees> {
         self.data
             .iter()
             .find(|(t, _)| t.could_unify_with_normalized(db, ty))
-            .map(|(_, tts)| tts.iter().cloned().collect())
+            .map(|(_, tts)| tts.clone())
     }
 
     pub fn insert(
@@ -49,9 +52,9 @@ impl LookupTable {
         trees: impl Iterator<Item = TypeTree>,
     ) {
         match self.data.iter().position(|it| it.0.could_unify_with_normalized(db, &ty)) {
-            Some(pos) => self.data[pos].1.extend(trees.take(MAX_VARIATIONS)),
+            Some(pos) => self.data[pos].1.extend(trees),
             None => {
-                self.data.push((ty.clone(), trees.take(MAX_VARIATIONS).collect()));
+                self.data.push((ty.clone(), trees.collect()));
                 for it in self.new_types.values_mut() {
                     it.push(ty.clone());
                 }

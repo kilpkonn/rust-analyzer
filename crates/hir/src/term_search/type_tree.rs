@@ -227,3 +227,60 @@ impl TypeTree {
         }
     }
 }
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum QuantifiedTypeTree<const N: usize> {
+    Few(FxHashSet<TypeTree>),
+    Many,
+}
+
+impl<const N: usize> QuantifiedTypeTree<N> {
+    pub fn new() -> Self {
+        Self::Few(Default::default())
+    }
+
+    pub fn gen_source_code<DB: HirDatabase>(
+        &self,
+        items_in_scope: &FxHashSet<ScopeDef>,
+        sema: &Semantics<'_, DB>,
+    ) -> Vec<String> {
+        match self {
+            QuantifiedTypeTree::Few(trees) => {
+                trees.iter().map(|it| it.gen_source_code(items_in_scope, sema)).collect()
+            }
+            QuantifiedTypeTree::Many => vec![String::from("todo!()")],
+        }
+    }
+
+    pub fn push(&mut self, tree: TypeTree) {
+        match self {
+            QuantifiedTypeTree::Few(trees) => {
+                trees.insert(tree);
+                if trees.len() > N {
+                    *self = QuantifiedTypeTree::Many
+                }
+            }
+            QuantifiedTypeTree::Many => (),
+        }
+    }
+
+    pub fn extend(&mut self, iter: impl Iterator<Item = TypeTree>) {
+        match self {
+            QuantifiedTypeTree::Few(trees) => {
+                trees.extend(iter.unique().take(N));
+                if trees.len() > N {
+                    *self = QuantifiedTypeTree::Many
+                }
+            }
+            QuantifiedTypeTree::Many => (),
+        }
+    }
+}
+
+impl<const N: usize> FromIterator<TypeTree> for QuantifiedTypeTree<N> {
+    fn from_iter<T: IntoIterator<Item = TypeTree>>(iter: T) -> Self {
+        let mut res = Self::new();
+        res.extend(iter.into_iter());
+        res
+    }
+}

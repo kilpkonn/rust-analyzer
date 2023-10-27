@@ -6,7 +6,7 @@ use crate::{
     Adt, AssocItem, GenericParam, HasVisibility, Impl, Module, ModuleDef, ScopeDef, Type, Variant,
 };
 
-use crate::term_search::{TypeInhabitant, TypeTransformation, TypeTree};
+use crate::term_search::{TypeInhabitant, TypeTransformation, TypeTree, TypeTrees};
 
 use super::{LookupTable, MAX_VARIATIONS, NewTypesKey};
 
@@ -71,7 +71,7 @@ pub(super) fn type_constructor<'a>(
         variant: Variant,
     ) -> Option<Vec<TypeTree>> {
         // Early exit if some param cannot be filled from lookup
-        let param_trees: Vec<Vec<TypeTree>> = variant
+        let param_trees: Vec<TypeTrees> = variant
             .fields(db)
             .into_iter()
             .map(|field| lookup.find(db, &field.ty(db)))
