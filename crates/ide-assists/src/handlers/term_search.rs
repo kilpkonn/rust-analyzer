@@ -93,6 +93,4 @@ mod tests {
             fn f() { let a = A { x: 1, y: true }; let b: i32 = a.x; }"#,
         )
     }
-
-
 }

@@ -19,8 +19,7 @@ enum NewTypesKey {
 /// Lookup table for term search
 #[derive(Default, Debug)]
 struct LookupTable {
-    // Use FxHashMap instead? not sure how to correctly hash Type tho
-    data: Vec<(Type, FxHashSet<TypeTree>)>,
+    data: FxHashMap<Type, FxHashSet<TypeTree>>,
     new_types: FxHashMap<NewTypesKey, Vec<Type>>,
     exhausted_scopedefs: FxHashSet<ScopeDef>,
     round_scopedef_hits: FxHashSet<ScopeDef>,
@@ -42,16 +41,11 @@ impl LookupTable {
             .map(|(_, tts)| tts.iter().cloned().collect())
     }
 
-    pub fn insert(
-        &mut self,
-        db: &dyn HirDatabase,
-        ty: Type,
-        trees: impl Iterator<Item = TypeTree>,
-    ) {
-        match self.data.iter().position(|it| it.0.could_unify_with_normalized(db, &ty)) {
-            Some(pos) => self.data[pos].1.extend(trees.take(MAX_VARIATIONS)),
+    pub fn insert(&mut self, ty: Type, trees: impl Iterator<Item = TypeTree>) {
+        match self.data.get_mut(&ty) {
+            Some(it) => it.extend(trees.take(MAX_VARIATIONS)),
             None => {
-                self.data.push((ty.clone(), trees.take(MAX_VARIATIONS).collect()));
+                self.data.insert(ty.clone(), trees.take(MAX_VARIATIONS).collect());
                 for it in self.new_types.values_mut() {
                     it.push(ty.clone());
                 }

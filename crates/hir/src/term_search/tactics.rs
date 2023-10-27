@@ -8,7 +8,7 @@ use crate::{
 
 use crate::term_search::{TypeInhabitant, TypeTransformation, TypeTree};
 
-use super::{LookupTable, MAX_VARIATIONS, NewTypesKey};
+use super::{LookupTable, NewTypesKey, MAX_VARIATIONS};
 
 /// Trivial tactic
 ///
@@ -32,7 +32,7 @@ pub(super) fn trivial<'a>(
                 Some(TypeTree::TypeInhabitant(TypeInhabitant::ConstParam(*it)))
             }
             ScopeDef::Local(it) => Some(TypeTree::TypeInhabitant(TypeInhabitant::Local(*it))),
-            ScopeDef::ImplSelfType(it) => {
+            ScopeDef::AdtSelfType(it) => {
                 Some(TypeTree::TypeInhabitant(TypeInhabitant::SelfParam(*it)))
             }
             _ => None,
@@ -41,7 +41,7 @@ pub(super) fn trivial<'a>(
         lookup.mark_exhausted(*def);
 
         let ty = tt.ty(db);
-        lookup.insert(db, ty.clone(), std::iter::once(tt.clone()));
+        lookup.insert(ty.clone(), std::iter::once(tt.clone()));
 
         ty.could_unify_with_normalized(db, goal).then(|| tt)
     })
@@ -96,7 +96,7 @@ pub(super) fn type_constructor<'a>(
                 .collect()
         };
 
-        lookup.insert(db, enum_ty.clone(), variant_trees.iter().cloned());
+        lookup.insert(enum_ty.clone(), variant_trees.iter().cloned());
         Some(variant_trees)
     }
 
@@ -160,7 +160,7 @@ pub(super) fn type_constructor<'a>(
                 };
 
                 lookup.mark_fulfilled(ScopeDef::ModuleDef(ModuleDef::Adt(Adt::Struct(*it))));
-                lookup.insert(db, struct_ty.clone(), struct_trees.iter().cloned());
+                lookup.insert(struct_ty.clone(), struct_trees.iter().cloned());
                 Some((struct_ty, struct_trees))
             }
             _ => None,
@@ -222,7 +222,7 @@ pub(super) fn free_function<'a>(
 
                 let ret_ty = it.ret_type(db);
                 lookup.mark_fulfilled(ScopeDef::ModuleDef(ModuleDef::Function(*it)));
-                lookup.insert(db, ret_ty.clone(), fn_trees.iter().cloned());
+                lookup.insert(ret_ty.clone(), fn_trees.iter().cloned());
                 Some((ret_ty, fn_trees))
             }
             _ => None,
@@ -266,9 +266,21 @@ pub(super) fn impl_method<'a>(
                 return None;
             }
 
+            // Ignore functions without self param
+            if !it.has_self_param(db) {
+                return None;
+            }
+
             let ret_ty = it.ret_type(db);
             // Ignore functions that do not change the type
             if ty.could_unify_with_normalized(db, &ret_ty) {
+                return None;
+            }
+
+            let self_ty = it.self_param(db).expect("No self param").ty(db);
+
+            // Ignore functions that have different self type
+            if !self_ty.autoderef(db).any(|s_ty| ty.could_unify_with_normalized(db, &s_ty)) {
                 return None;
             }
 
@@ -291,7 +303,7 @@ pub(super) fn impl_method<'a>(
                 })
                 .collect();
 
-            lookup.insert(db, ret_ty.clone(), fn_trees.iter().cloned());
+            lookup.insert(ret_ty.clone(), fn_trees.iter().cloned());
             Some((ret_ty, fn_trees))
         })
         .filter_map(|(ty, trees)| ty.could_unify_with_normalized(db, goal).then(|| trees))
@@ -310,7 +322,7 @@ pub(super) fn impl_method<'a>(
 /// * `goal` - Term search target type
 pub(super) fn struct_projection<'a>(
     db: &'a dyn HirDatabase,
-    _module: &'a Module,
+    module: &'a Module,
     _defs: &'a FxHashSet<ScopeDef>,
     lookup: &'a mut LookupTable,
     goal: &'a Type,
@@ -319,14 +331,18 @@ pub(super) fn struct_projection<'a>(
         .new_types(NewTypesKey::StructProjection)
         .into_iter()
         .map(|ty| (ty.clone(), lookup.find(db, &ty).expect("TypeTree not in lookup")))
-        .flat_map(|(ty, targets)| {
-            ty.fields(db).into_iter().map(move |(field, filed_ty)| {
+        .flat_map(move |(ty, targets)| {
+            let module = module.clone();
+            ty.fields(db).into_iter().filter_map(move |(field, filed_ty)| {
+                if !field.is_visible_from(db, module) {
+                    return None;
+                }
                 let trees =
                     targets.clone().into_iter().map(move |target| TypeTree::TypeTransformation {
                         func: TypeTransformation::Field(field),
                         params: vec![target],
                     });
-                (filed_ty, trees)
+                Some((filed_ty, trees))
             })
         })
         .filter_map(|(ty, trees)| ty.could_unify_with_normalized(db, goal).then(|| trees))

@@ -3541,7 +3541,7 @@ pub enum CaptureKind {
     Move,
 }
 
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug, Hash)]
 pub struct Type {
     env: Arc<TraitEnvironment>,
     ty: Ty,

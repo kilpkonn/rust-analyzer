@@ -3,8 +3,8 @@ use itertools::Itertools;
 use rustc_hash::FxHashSet;
 
 use crate::{
-    Adt, Const, ConstParam, Field, Function, Impl, Local, Module, ModuleDef, ScopeDef, Semantics,
-    Static, Struct, StructKind, Type, Variant,
+    Adt, Const, ConstParam, Field, Function, Local, Module, ModuleDef, ScopeDef, Semantics, Static,
+    Struct, StructKind, Type, Variant,
 };
 
 fn gen_module_prefix(
@@ -32,7 +32,7 @@ pub enum TypeInhabitant {
     Static(Static),
     Local(Local),
     ConstParam(ConstParam),
-    SelfParam(Impl),
+    SelfParam(Adt),
 }
 
 impl TypeInhabitant {
@@ -74,7 +74,7 @@ impl TypeInhabitant {
             TypeInhabitant::Static(it) => it.ty(db),
             TypeInhabitant::Local(it) => it.ty(db),
             TypeInhabitant::ConstParam(it) => it.ty(db),
-            TypeInhabitant::SelfParam(it) => it.self_ty(db),
+            TypeInhabitant::SelfParam(it) => it.ty(db),
         }
     }
 }
