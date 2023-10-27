@@ -436,15 +436,17 @@ impl flags::AnalysisStats {
                     let edit = ide::TextEdit::replace(range, generated);
                     edit.apply(&mut txt);
 
-                    std::fs::write(&path, txt).unwrap();
+                    if self.validate_term_search {
+                        std::fs::write(&path, txt).unwrap();
 
-                    // let res = ws.run_build_scripts(&cargo_config, &|_| ()).unwrap();
-                    // if let Some(err) = res.error() {
-                    //     if err.contains("error: could not compile") {
-                    //         acc.errors += 1;
-                    //     }
-                    //     bar.println(format!("Err here >>>>\n{}", err));
-                    // }
+                        let res = ws.run_build_scripts(&cargo_config, &|_| ()).unwrap();
+                        if let Some(err) = res.error() {
+                            if err.contains("error: could not compile") {
+                                acc.errors += 1;
+                            }
+                            bar.println(format!("Err here >>>>\n{}", err));
+                        }
+                    }
                 }
 
                 if syntax_hit_found {
@@ -464,7 +466,9 @@ impl flags::AnalysisStats {
                 bar.set_message(msg);
             }
             // Revert file back to original state
-            std::fs::write(&path, file_txt.to_string()).unwrap();
+            if self.validate_term_search {
+                std::fs::write(&path, file_txt.to_string()).unwrap();
+            }
 
             bar.inc(1);
         }
@@ -482,7 +486,9 @@ impl flags::AnalysisStats {
             acc.total_tail_exprs,
             percentage(acc.total_tail_exprs - acc.tail_expr_no_term, acc.total_tail_exprs)
         ));
-        bar.println(format!("Tail Exprs errors: {}", acc.errors));
+        if self.validate_term_search {
+            bar.println(format!("Tail Exprs errors: {}", acc.errors));
+        }
         bar.println(format!(
             "Term search avg time: {}ms",
             term_search_time.time.as_millis() as u64 / acc.total_tail_exprs
