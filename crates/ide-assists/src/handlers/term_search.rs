@@ -93,4 +93,19 @@ mod tests {
             fn f() { let a = A { x: 1, y: true }; let b: i32 = a.x; }"#,
         )
     }
+
+    #[test]
+    fn test_mir() {
+        check_assist(
+        term_search,
+            r#"macro_rules! todo { () => (x) };
+            fn foo<'a, 'b>(x: &'a i32) -> &'b i32 where 'b : 'a {
+                todo$0!()
+            }"#,
+            r#"macro_rules! todo { () => (!) };
+            fn foo<'a, 'b>(x: &'a i32) -> &'b i32 where 'a : 'b {
+
+            }"#,
+        );
+    }
 }

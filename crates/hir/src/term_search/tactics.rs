@@ -3,7 +3,7 @@ use itertools::Itertools;
 use rustc_hash::FxHashSet;
 
 use crate::{
-    Adt, AssocItem, GenericParam, HasVisibility, Impl, Module, ModuleDef, ScopeDef, Type, Variant,
+    Adt, AssocItem, GenericParam, HasVisibility, Impl, Module, ModuleDef, ScopeDef, Type, Variant, DefWithBody,
 };
 
 use crate::term_search::{TypeInhabitant, TypeTransformation, TypeTree};
@@ -193,6 +193,10 @@ pub(super) fn free_function<'a>(
                 if !it.is_visible_from(db, *module) || it.is_unsafe_to_call(db) {
                     return None;
                 }
+
+                let def: DefWithBody = (*it).into();
+                let res = db.borrowck(def.into()).unwrap();
+                dbg!(res);
 
                 // Early exit if some param cannot be filled from lookup
                 let param_trees: Vec<Vec<TypeTree>> = it
