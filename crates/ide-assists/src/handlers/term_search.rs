@@ -93,4 +93,30 @@ mod tests {
             fn f() { let a = A { x: 1, y: true }; let b: i32 = a.x; }"#,
         )
     }
+
+    #[test]
+    fn test_enum_with_generics() {
+        check_assist(
+            term_search,
+            r#"macro_rules! todo { () => (!) };
+            enum Option<T> { Some(T), None }
+            fn f() { let a: i32 = 1; let b: Option<i32> = todo$0!(); }"#,
+            r#"macro_rules! todo { () => (!) };
+            enum Option<T> { Some(T), None }
+            fn f() { let a: i32 = 1; let b: Option<i32> = Option::None; }"#,
+        )
+    }
+
+    #[test]
+    fn test_enum_with_generics2() {
+        check_assist(
+            term_search,
+            r#"macro_rules! todo { () => (!) };
+            enum Option<T> { None, Some(T) }
+            fn f() { let a: i32 = 1; let b: Option<i32> = todo$0!(); }"#,
+            r#"macro_rules! todo { () => (!) };
+            enum Option<T> { None, Some(T) }
+            fn f() { let a: i32 = 1; let b: Option<i32> = Option::None; }"#,
+        )
+    }
 }
