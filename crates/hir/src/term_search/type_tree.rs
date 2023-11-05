@@ -32,7 +32,6 @@ pub enum TypeInhabitant {
     Static(Static),
     Local(Local),
     ConstParam(ConstParam),
-    SelfParam(Adt),
 }
 
 impl TypeInhabitant {
@@ -62,7 +61,6 @@ impl TypeInhabitant {
             }
             TypeInhabitant::Local(it) => return it.name(db).display(db).to_string(),
             TypeInhabitant::ConstParam(it) => return it.name(db).display(db).to_string(),
-            TypeInhabitant::SelfParam(_) => return String::from("self"),
         };
         let prefix = gen_module_prefix(module, items_in_scope, db);
         format!("{}{}", prefix, name)
@@ -74,7 +72,6 @@ impl TypeInhabitant {
             TypeInhabitant::Static(it) => it.ty(db),
             TypeInhabitant::Local(it) => it.ty(db),
             TypeInhabitant::ConstParam(it) => it.ty(db),
-            TypeInhabitant::SelfParam(it) => it.ty(db),
         }
     }
 }
