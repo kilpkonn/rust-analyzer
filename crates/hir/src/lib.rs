@@ -1996,6 +1996,11 @@ impl Function {
         db.function_data(self.id).attrs.is_bench()
     }
 
+    /// Is this function marked as unstable with `#[feature]` attribute?
+    pub fn is_unstable(self, db: &dyn HirDatabase) -> bool {
+        db.function_data(self.id).attrs.is_unstable()
+    }
+
     pub fn is_unsafe_to_call(self, db: &dyn HirDatabase) -> bool {
         hir_ty::is_fn_unsafe_to_call(db, self.id)
     }

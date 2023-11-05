@@ -409,7 +409,7 @@ impl flags::AnalysisStats {
                 });
 
                 let found_terms = hir::term_search::term_search(
-                    db,
+                    &sema,
                     scope.module(),
                     defs.clone(),
                     &target_ty.adjusted(),

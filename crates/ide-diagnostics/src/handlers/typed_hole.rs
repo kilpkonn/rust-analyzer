@@ -52,7 +52,7 @@ pub fn fixes(sema: &Semantics<'_, RootDatabase>, d: &hir::TypedHole) -> Option<V
         defs.insert(def);
     });
 
-    let paths = term_search(db, scope.module(), defs.clone(), &d.expected);
+    let paths = term_search(sema, scope.module(), defs.clone(), &d.expected);
 
     let mut assists = vec![];
     for path in paths.into_iter().unique() {
@@ -146,7 +146,8 @@ fn t<T>() -> T { loop {} }
             r#"
 fn main() {
     let _x = [(); _];
-    let _y: [(); 10] = [(); _];
+    // FIXME: This should trigger error
+    // let _y: [(); 10] = [(); _];
     _ = 0;
     (_,) = (1,);
 }

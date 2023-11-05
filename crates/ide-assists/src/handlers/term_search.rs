@@ -33,8 +33,7 @@ pub(crate) fn term_search(acc: &mut Assists, ctx: &AssistContext<'_>) -> Option<
         defs.insert(def);
     });
 
-    let paths =
-        hir::term_search::term_search(ctx.sema.db, scope.module(), defs.clone(), &target_ty);
+    let paths = hir::term_search::term_search(&ctx.sema, scope.module(), defs.clone(), &target_ty);
 
     dbg!(&paths);
 
@@ -67,8 +66,8 @@ mod tests {
     fn test_complete_local() {
         check_assist(
             term_search,
-            "macro_rules! todo { () => (!) }; fn f() { let a: u128 = 1; let b: u128 = todo$0!() }",
-            "macro_rules! todo { () => (!) }; fn f() { let a: u128 = 1; let b: u128 = a }",
+            "macro_rules! todo { () => (_) }; fn f() { let a: u128 = 1; let b: u128 = todo$0!() }",
+            "macro_rules! todo { () => (_) }; fn f() { let a: u128 = 1; let b: u128 = a }",
         )
     }
 
@@ -76,8 +75,8 @@ mod tests {
     fn test_complete_todo_with_msg() {
         check_assist(
             term_search,
-            "macro_rules! todo { ($($arg:tt)+) => (!) }; fn f() { let a: u128 = 1; let b: u128 = todo$0!(\"asd\") }",
-            "macro_rules! todo { ($($arg:tt)+) => (!) }; fn f() { let a: u128 = 1; let b: u128 = a }",
+            "macro_rules! todo { ($($arg:tt)+) => (_) }; fn f() { let a: u128 = 1; let b: u128 = todo$0!(\"asd\") }",
+            "macro_rules! todo { ($($arg:tt)+) => (_) }; fn f() { let a: u128 = 1; let b: u128 = a }",
         )
     }
 
@@ -85,10 +84,10 @@ mod tests {
     fn test_complete_struct_field() {
         check_assist(
             term_search,
-            r#"macro_rules! todo { () => (!) };
+            r#"macro_rules! todo { () => (_) };
             struct A { pub x: i32, y: bool }
             fn f() { let a = A { x: 1, y: true }; let b: i32 = todo$0!(); }"#,
-            r#"macro_rules! todo { () => (!) };
+            r#"macro_rules! todo { () => (_) };
             struct A { pub x: i32, y: bool }
             fn f() { let a = A { x: 1, y: true }; let b: i32 = a.x; }"#,
         )
@@ -98,10 +97,10 @@ mod tests {
     fn test_enum_with_generics() {
         check_assist(
             term_search,
-            r#"macro_rules! todo { () => (!) };
+            r#"macro_rules! todo { () => (_) };
             enum Option<T> { Some(T), None }
             fn f() { let a: i32 = 1; let b: Option<i32> = todo$0!(); }"#,
-            r#"macro_rules! todo { () => (!) };
+            r#"macro_rules! todo { () => (_) };
             enum Option<T> { Some(T), None }
             fn f() { let a: i32 = 1; let b: Option<i32> = Option::None; }"#,
         )
@@ -111,10 +110,10 @@ mod tests {
     fn test_enum_with_generics2() {
         check_assist(
             term_search,
-            r#"macro_rules! todo { () => (!) };
+            r#"macro_rules! todo { () => (_) };
             enum Option<T> { None, Some(T) }
             fn f() { let a: i32 = 1; let b: Option<i32> = todo$0!(); }"#,
-            r#"macro_rules! todo { () => (!) };
+            r#"macro_rules! todo { () => (_) };
             enum Option<T> { None, Some(T) }
             fn f() { let a: i32 = 1; let b: Option<i32> = Option::None; }"#,
         )

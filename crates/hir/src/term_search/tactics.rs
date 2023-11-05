@@ -31,9 +31,20 @@ pub(super) fn trivial<'a>(
             ScopeDef::GenericParam(GenericParam::ConstParam(it)) => {
                 Some(TypeTree::TypeInhabitant(TypeInhabitant::ConstParam(*it)))
             }
-            ScopeDef::Local(it) => Some(TypeTree::TypeInhabitant(TypeInhabitant::Local(*it))),
-            ScopeDef::AdtSelfType(it) => {
-                Some(TypeTree::TypeInhabitant(TypeInhabitant::SelfParam(*it)))
+            ScopeDef::Local(it) => {
+                let borrowck = db.borrowck(it.parent).ok()?;
+
+                let invalid = borrowck.iter().any(|b| {
+                    b.partially_moved.iter().any(|moved| {
+                        Some(&moved.local) == b.mir_body.binding_locals.get(it.binding_id)
+                    })
+                });
+
+                if invalid {
+                    return None;
+                }
+
+                Some(TypeTree::TypeInhabitant(TypeInhabitant::Local(*it)))
             }
             _ => None,
         }?;
@@ -190,7 +201,10 @@ pub(super) fn free_function<'a>(
         .filter_map(|def| match def {
             ScopeDef::ModuleDef(ModuleDef::Function(it)) => {
                 // Filter out private and unsafe functions
-                if !it.is_visible_from(db, *module) || it.is_unsafe_to_call(db) {
+                if !it.is_visible_from(db, *module)
+                    || it.is_unsafe_to_call(db)
+                    || it.is_unstable(db)
+                {
                     return None;
                 }
 
@@ -262,7 +276,7 @@ pub(super) fn impl_method<'a>(
         })
         .filter_map(|(ty, it)| {
             // Filter out private and unsafe functions
-            if !it.is_visible_from(db, *module) || it.is_unsafe_to_call(db) {
+            if !it.is_visible_from(db, *module) || it.is_unsafe_to_call(db) || it.is_unstable(db) {
                 return None;
             }
 

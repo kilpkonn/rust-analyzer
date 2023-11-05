@@ -1,7 +1,7 @@
 use hir_ty::db::HirDatabase;
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::{Module, ScopeDef, Type};
+use crate::{Module, ScopeDef, Semantics, Type};
 
 pub mod type_tree;
 pub use type_tree::{TypeInhabitant, TypeTransformation, TypeTree};
@@ -84,8 +84,8 @@ impl LookupTable {
     }
 }
 
-pub fn term_search(
-    db: &dyn HirDatabase,
+pub fn term_search<DB: HirDatabase>(
+    sema: &Semantics<'_, DB>,
     module: Module,
     mut defs: FxHashSet<ScopeDef>,
     goal: &Type,
@@ -93,16 +93,17 @@ pub fn term_search(
     let mut lookup = LookupTable::new();
 
     // Try trivial tactic first, also populates lookup table
-    let mut solutions: Vec<TypeTree> = tactics::trivial(db, &defs, &mut lookup, goal).collect();
+    let mut solutions: Vec<TypeTree> =
+        tactics::trivial(sema.db, &defs, &mut lookup, goal).collect();
     let mut solution_found = !solutions.is_empty();
 
     for _ in 0..5 {
         lookup.new_round();
 
-        solutions.extend(tactics::type_constructor(db, &module, &defs, &mut lookup, goal));
-        solutions.extend(tactics::free_function(db, &module, &defs, &mut lookup, goal));
-        solutions.extend(tactics::impl_method(db, &module, &defs, &mut lookup, goal));
-        solutions.extend(tactics::struct_projection(db, &module, &defs, &mut lookup, goal));
+        solutions.extend(tactics::type_constructor(sema.db, &module, &defs, &mut lookup, goal));
+        solutions.extend(tactics::free_function(sema.db, &module, &defs, &mut lookup, goal));
+        solutions.extend(tactics::impl_method(sema.db, &module, &defs, &mut lookup, goal));
+        solutions.extend(tactics::struct_projection(sema.db, &module, &defs, &mut lookup, goal));
 
         if solution_found {
             break;

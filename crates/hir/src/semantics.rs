@@ -30,9 +30,9 @@ use crate::{
     semantics::source_to_def::{ChildContainer, SourceToDefCache, SourceToDefCtx},
     source_analyzer::{resolve_hir_path, SourceAnalyzer},
     Access, Adjust, Adjustment, AutoBorrow, BindingMode, BuiltinAttr, Callable, ConstParam, Crate,
-    DeriveHelper, Field, Function, HasSource, HirFileId, Impl, InFile, Label, LifetimeParam, Local,
-    Macro, Module, ModuleDef, Name, OverloadedDeref, Path, ScopeDef, ToolModule, Trait, Type,
-    TypeAlias, TypeParam, VariantDef,
+    DefWithBody, DeriveHelper, Field, Function, HasSource, HirFileId, Impl, InFile, Label,
+    LifetimeParam, Local, Macro, Module, ModuleDef, Name, OverloadedDeref, Path, ScopeDef,
+    ToolModule, Trait, Type, TypeAlias, TypeParam, VariantDef,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1477,6 +1477,10 @@ impl SemanticsScope<'_> {
 
     pub fn extern_crate_decls(&self) -> impl Iterator<Item = Name> + '_ {
         self.resolver.extern_crate_decls_in_scope(self.db.upcast())
+    }
+
+    pub fn body_owner(&self) -> Option<DefWithBody> {
+        self.resolver.body_owner().map(|it| it.into())
     }
 }
 
