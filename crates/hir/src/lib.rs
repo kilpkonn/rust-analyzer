@@ -957,6 +957,23 @@ impl Field {
         Type::new(db, var_id, ty)
     }
 
+    pub fn ty_with_generics(&self, db: &dyn HirDatabase, generics: &[Type]) -> Type {
+        let var_id = self.parent.into();
+        let def_id: AdtId = match self.parent {
+            VariantDef::Struct(it) => it.id.into(),
+            VariantDef::Union(it) => it.id.into(),
+            VariantDef::Variant(it) => it.parent.id.into(),
+        };
+        let mut generics = generics.iter();
+        let substs = TyBuilder::subst_for_def(db, def_id, None)
+            .fill(|_| {
+                GenericArg::new(Interner, GenericArgData::Ty(generics.next().unwrap().ty.clone()))
+            })
+            .build();
+        let ty = db.field_types(var_id)[self.id].clone().substitute(Interner, &substs);
+        Type::new(db, var_id, ty)
+    }
+
     pub fn layout(&self, db: &dyn HirDatabase) -> Result<Layout, LayoutError> {
         db.layout_of_ty(
             self.ty(db).ty.clone(),
@@ -1099,6 +1116,17 @@ impl Enum {
 
     pub fn ty(self, db: &dyn HirDatabase) -> Type {
         Type::from_def(db, self.id)
+    }
+
+    pub fn ty_with_generics(&self, db: &dyn HirDatabase, generics: &[Type]) -> Type {
+        let mut generics = generics.iter();
+        let substs = TyBuilder::subst_for_def(db, self.id, None)
+            .fill(|_| {
+                GenericArg::new(Interner, GenericArgData::Ty(generics.next().unwrap().ty.clone()))
+            })
+            .build();
+        let ty = db.ty(self.id.into()).substitute(Interner, &substs);
+        Type::new(db, self.id, ty)
     }
 
     /// The type of the enum variant bodies.

@@ -53,6 +53,10 @@ impl LookupTable {
         }
     }
 
+    pub fn iter_types(&self) -> impl Iterator<Item = Type> + '_ {
+        self.data.keys().cloned()
+    }
+
     pub fn new_types(&mut self, key: NewTypesKey) -> Vec<Type> {
         match self.new_types.get_mut(&key) {
             Some(it) => std::mem::take(it),

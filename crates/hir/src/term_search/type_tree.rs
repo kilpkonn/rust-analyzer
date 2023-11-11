@@ -79,7 +79,7 @@ impl TypeInhabitant {
 #[derive(Debug, Clone, Eq, Hash, PartialEq)]
 pub enum TypeTransformation {
     Function(Function),
-    Variant(Variant),
+    Variant { variant: Variant, generics: Vec<Type> },
     Struct(Struct),
     Field(Field),
 }
@@ -88,7 +88,9 @@ impl TypeTransformation {
     fn ret_ty(&self, db: &dyn HirDatabase) -> Type {
         match self {
             Self::Function(it) => it.ret_type(db),
-            Self::Variant(it) => it.parent_enum(db).ty(db),
+            Self::Variant { variant, generics } => {
+                variant.parent_enum(db).ty_with_generics(db, generics)
+            }
             Self::Struct(it) => it.ty(db),
             Self::Field(it) => it.ty(db),
         }
@@ -123,7 +125,7 @@ impl TypeTransformation {
                     format!("{}{}", gen_module_prefix(it.module(db), items_in_scope, db), sig)
                 }
             }
-            Self::Variant(variant) => {
+            Self::Variant { variant, .. } => {
                 let inner = match variant.kind(db) {
                     StructKind::Tuple => {
                         let args = params

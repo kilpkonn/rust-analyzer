@@ -3,7 +3,8 @@ use itertools::Itertools;
 use rustc_hash::FxHashSet;
 
 use crate::{
-    Adt, AssocItem, GenericParam, HasVisibility, Impl, Module, ModuleDef, ScopeDef, Type, Variant,
+    Adt, AssocItem, Enum, GenericParam, HasVisibility, Impl, Module, ModuleDef, ScopeDef, Type,
+    Variant,
 };
 
 use crate::term_search::{TypeInhabitant, TypeTransformation, TypeTree};
@@ -78,63 +79,81 @@ pub(super) fn type_constructor<'a>(
     fn variant_helper(
         db: &dyn HirDatabase,
         lookup: &mut LookupTable,
-        enum_ty: Type,
+        parent_enum: Enum,
         variant: Variant,
     ) -> Option<Vec<TypeTree>> {
-        // Early exit if some param cannot be filled from lookup
-        let param_trees: Vec<Vec<TypeTree>> = variant
-            .fields(db)
+        let generics = db.generic_params(variant.parent.id.into());
+        let generic_params = lookup
+            .iter_types()
+            .collect::<Vec<_>>() // Force take ownership
             .into_iter()
-            .map(|field| lookup.find(db, &field.ty(db)))
-            .collect::<Option<_>>()?;
+            .permutations(generics.type_or_consts.len());
 
-        // Note that we need special case for 0 param constructors because of multi cartesian
-        // product
-        let variant_trees: Vec<TypeTree> = if param_trees.is_empty() {
-            vec![TypeTree::TypeTransformation {
-                func: TypeTransformation::Variant(variant),
-                params: Vec::new(),
-            }]
-        } else {
-            param_trees
-                .into_iter()
-                .multi_cartesian_product()
-                .take(MAX_VARIATIONS)
-                .map(|params| TypeTree::TypeTransformation {
-                    func: TypeTransformation::Variant(variant),
-                    params,
-                })
-                .collect()
-        };
+        let trees: Vec<_> = generic_params
+            .filter_map(|generics| {
+                // Early exit if some param cannot be filled from lookup
+                let param_trees: Vec<Vec<TypeTree>> = variant
+                    .fields(db)
+                    .into_iter()
+                    .map(|field| lookup.find(db, &field.ty_with_generics(db, &generics)))
+                    .collect::<Option<_>>()?;
 
-        lookup.insert(enum_ty.clone(), variant_trees.iter().cloned());
-        Some(variant_trees)
+                // Note that we need special case for 0 param constructors because of multi cartesian
+                // product
+                let variant_trees: Vec<TypeTree> = if param_trees.is_empty() {
+                    vec![TypeTree::TypeTransformation {
+                        func: TypeTransformation::Variant { variant, generics: generics.clone() },
+                        params: Vec::new(),
+                    }]
+                } else {
+                    param_trees
+                        .into_iter()
+                        .multi_cartesian_product()
+                        .take(MAX_VARIATIONS)
+                        .map(|params| TypeTree::TypeTransformation {
+                            func: TypeTransformation::Variant {
+                                variant,
+                                generics: generics.clone(),
+                            },
+                            params,
+                        })
+                        .collect()
+                };
+                lookup.insert(
+                    parent_enum.ty_with_generics(db, &generics),
+                    variant_trees.iter().cloned(),
+                );
+
+                Some(variant_trees)
+            })
+            .flatten()
+            .collect();
+        match trees.is_empty() {
+            true => None,
+            false => Some(trees),
+        }
     }
 
     defs.iter()
         .filter_map(|def| match def {
             ScopeDef::ModuleDef(ModuleDef::Variant(it)) => {
-                let enum_ty = it.parent_enum(db).ty(db);
-
-                let variant_trees = variant_helper(db, lookup, enum_ty.clone(), *it)?;
+                let variant_trees = variant_helper(db, lookup, it.parent_enum(db), *it)?;
                 lookup.mark_fulfilled(ScopeDef::ModuleDef(ModuleDef::Variant(*it)));
-                Some((enum_ty, variant_trees))
+                Some(variant_trees)
             }
-            ScopeDef::ModuleDef(ModuleDef::Adt(Adt::Enum(it))) => {
-                let enum_ty = it.ty(db);
-
-                let trees: Vec<TypeTree> = it
+            ScopeDef::ModuleDef(ModuleDef::Adt(Adt::Enum(enum_))) => {
+                let trees: Vec<TypeTree> = enum_
                     .variants(db)
                     .into_iter()
-                    .filter_map(|it| variant_helper(db, lookup, enum_ty.clone(), it))
+                    .filter_map(|it| variant_helper(db, lookup, enum_.clone(), it))
                     .flatten()
                     .collect();
 
                 if !trees.is_empty() {
-                    lookup.mark_fulfilled(ScopeDef::ModuleDef(ModuleDef::Adt(Adt::Enum(*it))));
+                    lookup.mark_fulfilled(ScopeDef::ModuleDef(ModuleDef::Adt(Adt::Enum(*enum_))));
                 }
 
-                Some((enum_ty, trees))
+                Some(trees)
             }
             ScopeDef::ModuleDef(ModuleDef::Adt(Adt::Struct(it))) => {
                 let struct_ty = it.ty(db);
@@ -172,12 +191,12 @@ pub(super) fn type_constructor<'a>(
 
                 lookup.mark_fulfilled(ScopeDef::ModuleDef(ModuleDef::Adt(Adt::Struct(*it))));
                 lookup.insert(struct_ty.clone(), struct_trees.iter().cloned());
-                Some((struct_ty, struct_trees))
+                Some(struct_trees)
             }
             _ => None,
         })
-        .filter_map(|(ty, trees)| ty.could_unify_with_normalized(db, goal).then(|| trees))
         .flatten()
+        .filter_map(|tree| tree.ty(db).could_unify_with_normalized(db, goal).then(|| tree))
 }
 
 /// Free function tactic
