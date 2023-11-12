@@ -102,7 +102,7 @@ mod tests {
             fn f() { let a: i32 = 1; let b: Option<i32> = todo$0!(); }"#,
             r#"macro_rules! todo { () => (_) };
             enum Option<T> { Some(T), None }
-            fn f() { let a: i32 = 1; let b: Option<i32> = Option::<i32>::None; }"#,
+            fn f() { let a: i32 = 1; let b: Option<i32> = Option::None::<i32>; }"#,
         )
     }
 
@@ -115,7 +115,7 @@ mod tests {
             fn f() { let a: i32 = 1; let b: Option<i32> = todo$0!(); }"#,
             r#"macro_rules! todo { () => (_) };
             enum Option<T> { None, Some(T) }
-            fn f() { let a: i32 = 1; let b: Option<i32> = Option::<i32>::Some(a); }"#,
+            fn f() { let a: i32 = 1; let b: Option<i32> = Option::Some(a); }"#,
         )
     }
 }

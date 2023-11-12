@@ -126,19 +126,14 @@ impl TypeTransformation {
                 }
             }
             Self::Variant { variant, generics } => {
-                let generics_str = if generics.is_empty() {
-                    String::new()
-                } else {
-                    let generics = generics.iter().map(|it| it.display(db)).join(", ");
-                    format!("::<{generics}>")
-                };
                 let inner = match variant.kind(db) {
                     StructKind::Tuple => {
                         let args = params
                             .iter()
                             .map(|f| f.gen_source_code(items_in_scope, sema))
                             .join(", ");
-                        format!("{}({})", variant.name(db).display(db).to_string(), args)
+                        let name = variant.name(db).display(db).to_string();
+                        format!("{name}({args})")
                     }
                     StructKind::Record => {
                         let fields = variant.fields(db);
@@ -153,61 +148,84 @@ impl TypeTransformation {
                                 )
                             })
                             .join(", ");
-                        format!("{} {{ {} }}", variant.name(db).display(db).to_string(), args)
+                        let name = variant.name(db).display(db).to_string();
+                        format!("{name} {{ {args} }}")
                     }
-                    StructKind::Unit => variant.name(db).display(db).to_string(),
+                    StructKind::Unit => match generics.is_empty() {
+                        true => variant.name(db).display(db).to_string(),
+                        false => {
+                            let name = variant.name(db).display(db).to_string();
+                            let generics = generics.iter().map(|it| it.display(db)).join(", ");
+                            format!("{name}::<{generics}>")
+                        }
+                    },
                 };
                 if items_in_scope.contains(&ScopeDef::ModuleDef(ModuleDef::Variant(*variant))) {
-                    format!("{inner}{generics_str}")
+                    inner
                 } else {
                     let parent_enum = variant.parent_enum(db);
-                    let sig = format!(
-                        "{}{}::{}",
-                        parent_enum.name(db).display(db).to_string(),
-                        generics_str,
-                        inner,
-                    );
+                    let name = parent_enum.name(db).display(db).to_string();
+                    let sig = format!("{name}::{inner}",);
                     if items_in_scope
                         .contains(&ScopeDef::ModuleDef(ModuleDef::Adt(Adt::Enum(parent_enum))))
                     {
                         return sig;
                     }
-                    format!("{}{}", gen_module_prefix(variant.module(db), items_in_scope, db), sig)
+                    let prefix = gen_module_prefix(variant.module(db), items_in_scope, db);
+                    format!("{prefix}{sig}")
                 }
             }
             Self::Struct { strukt, generics } => {
-                let generics_str = if generics.is_empty() {
-                    String::new()
-                } else {
-                    let generics = generics.iter().map(|it| it.display(db)).join(", ");
-                    format!("<{generics}>")
+                let sig = match strukt.kind(db) {
+                    StructKind::Tuple => {
+                        let fields = strukt.fields(db);
+                        let args = params
+                            .iter()
+                            .zip(fields.iter())
+                            .map(|(a, f)| {
+                                format!(
+                                    "{}: {}",
+                                    f.name(db).display(db).to_string(),
+                                    a.gen_source_code(items_in_scope, sema)
+                                )
+                            })
+                            .join(", ");
+                        format!("({})", args)
+                    }
+                    StructKind::Record => {
+                        let fields = strukt.fields(db);
+                        let args = params
+                            .iter()
+                            .zip(fields.iter())
+                            .map(|(a, f)| {
+                                format!(
+                                    "{}: {}",
+                                    f.name(db).display(db).to_string(),
+                                    a.gen_source_code(items_in_scope, sema)
+                                )
+                            })
+                            .join(", ");
+                        let name = strukt.name(db).display(db).to_string();
+                        format!("{name} {{ {args} }}")
+                    }
+                    StructKind::Unit => match generics.is_empty() {
+                        true => strukt.name(db).display(db).to_string(),
+                        false => {
+                            let name = strukt.name(db).display(db).to_string();
+                            let generics = generics.iter().map(|it| it.display(db)).join(", ");
+                            format!("{name}::<{generics}>")
+                        }
+                    },
                 };
 
-                let fields = strukt.fields(db);
-                let args = params
-                    .iter()
-                    .zip(fields.iter())
-                    .map(|(a, f)| {
-                        format!(
-                            "{}: {}",
-                            f.name(db).display(db).to_string(),
-                            a.gen_source_code(items_in_scope, sema)
-                        )
-                    })
-                    .join(", ");
-                let sig = format!(
-                    "{}{} {{ {} }}",
-                    strukt.name(db).display(db).to_string(),
-                    generics_str,
-                    args
-                );
                 if items_in_scope
                     .contains(&ScopeDef::ModuleDef(ModuleDef::Adt(Adt::Struct(*strukt))))
                 {
                     return sig;
                 }
 
-                format!("{}{}", gen_module_prefix(strukt.module(db), items_in_scope, db), sig)
+                let prefix = gen_module_prefix(strukt.module(db), items_in_scope, db);
+                format!("{prefix}{sig}")
             }
             Self::Field(it) => {
                 let strukt = params

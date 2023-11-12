@@ -32,7 +32,7 @@ use oorandom::Rand32;
 use profile::{Bytes, StopWatch};
 use project_model::{CargoConfig, ProjectManifest, ProjectWorkspace, RustLibSource};
 use rayon::prelude::*;
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 use syntax::{AstNode, SyntaxNode};
 use vfs::{AbsPathBuf, FileId, Vfs, VfsPath};
 
@@ -350,7 +350,8 @@ impl flags::AnalysisStats {
             tail_expr_syntax_hits: u64,
             tail_expr_no_term: u64,
             total_tail_exprs: u64,
-            errors: u64,
+            error_codes: FxHashMap<String, u32>,
+            syntax_errors: u32,
         }
 
         let mut acc: Acc = Default::default();
@@ -442,9 +443,18 @@ impl flags::AnalysisStats {
                         let res = ws.run_build_scripts(&cargo_config, &|_| ()).unwrap();
                         if let Some(err) = res.error() {
                             if err.contains("error: could not compile") {
-                                acc.errors += 1;
+                                if let Some(mut err_idx) = err.find("error[E") {
+                                    err_idx += 7;
+                                    let err_code = &err[err_idx..err_idx + 4];
+                                    acc.error_codes
+                                        .entry(err_code.to_owned())
+                                        .and_modify(|n| *n += 1)
+                                        .or_insert(1);
+                                } else {
+                                    acc.syntax_errors += 1;
+                                    bar.println(format!("Syntax error here >>>>\n{}", err));
+                                }
                             }
-                            bar.println(format!("Err here >>>>\n{}", err));
                         }
                     }
                 }
@@ -487,7 +497,16 @@ impl flags::AnalysisStats {
             percentage(acc.total_tail_exprs - acc.tail_expr_no_term, acc.total_tail_exprs)
         ));
         if self.validate_term_search {
-            bar.println(format!("Tail Exprs errors: {}", acc.errors));
+            bar.println(format!(
+                "Tail Exprs total errors: {}, syntax errors: {}, error codes:",
+                acc.error_codes.values().sum::<u32>() + acc.syntax_errors,
+                acc.syntax_errors,
+            ));
+            for (err, count) in acc.error_codes {
+                bar.println(format!(
+                    "    E{err}: {count:>5}  (https://doc.rust-lang.org/error_codes/E{err}.html)"
+                ));
+            }
         }
         bar.println(format!(
             "Term search avg time: {}ms",
