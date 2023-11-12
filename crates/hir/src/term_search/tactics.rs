@@ -240,10 +240,13 @@ pub(super) fn free_function<'a>(
     defs.iter()
         .filter_map(|def| match def {
             ScopeDef::ModuleDef(ModuleDef::Function(it)) => {
+                let ret_ty = it.ret_type(db);
                 // Filter out private and unsafe functions
                 if !it.is_visible_from(db, *module)
                     || it.is_unsafe_to_call(db)
                     || it.is_unstable(db)
+                    || ret_ty.is_reference()
+                    || ret_ty.is_raw_ptr()
                 {
                     return None;
                 }
@@ -274,7 +277,6 @@ pub(super) fn free_function<'a>(
                         .collect()
                 };
 
-                let ret_ty = it.ret_type(db);
                 lookup.mark_fulfilled(ScopeDef::ModuleDef(ModuleDef::Function(*it)));
                 lookup.insert(ret_ty.clone(), fn_trees.iter().cloned());
                 Some((ret_ty, fn_trees))
@@ -315,8 +317,14 @@ pub(super) fn impl_method<'a>(
             _ => None,
         })
         .filter_map(|(ty, it)| {
-            // Filter out private and unsafe functions
-            if !it.is_visible_from(db, *module) || it.is_unsafe_to_call(db) || it.is_unstable(db) {
+            let ret_ty = it.ret_type(db);
+            // Filter out private and unsafe functions as well as functions that return references
+            if !it.is_visible_from(db, *module)
+                || it.is_unsafe_to_call(db)
+                || it.is_unstable(db)
+                || ret_ty.is_reference()
+                || ret_ty.is_raw_ptr()
+            {
                 return None;
             }
 
@@ -325,7 +333,6 @@ pub(super) fn impl_method<'a>(
                 return None;
             }
 
-            let ret_ty = it.ret_type(db);
             // Ignore functions that do not change the type
             if ty.could_unify_with_normalized(db, &ret_ty) {
                 return None;

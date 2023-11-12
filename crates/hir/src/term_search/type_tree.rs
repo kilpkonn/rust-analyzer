@@ -178,17 +178,9 @@ impl TypeTransformation {
             Self::Struct { strukt, generics } => {
                 let sig = match strukt.kind(db) {
                     StructKind::Tuple => {
-                        let fields = strukt.fields(db);
                         let args = params
                             .iter()
-                            .zip(fields.iter())
-                            .map(|(a, f)| {
-                                format!(
-                                    "{}: {}",
-                                    f.name(db).display(db).to_string(),
-                                    a.gen_source_code(items_in_scope, sema)
-                                )
-                            })
+                            .map(|a| a.gen_source_code(items_in_scope, sema))
                             .join(", ");
                         format!("({})", args)
                     }
