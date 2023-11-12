@@ -81,7 +81,8 @@ pub(super) fn type_constructor<'a>(
         lookup: &mut LookupTable,
         parent_enum: Enum,
         variant: Variant,
-    ) -> Option<Vec<TypeTree>> {
+        goal: &Type,
+    ) -> Vec<(Type, Vec<TypeTree>)> {
         let generics = db.generic_params(variant.parent.id.into());
         let generic_params = lookup
             .iter_types()
@@ -89,8 +90,14 @@ pub(super) fn type_constructor<'a>(
             .into_iter()
             .permutations(generics.type_or_consts.len());
 
-        let trees: Vec<_> = generic_params
+        generic_params
             .filter_map(|generics| {
+                let enum_ty = parent_enum.ty_with_generics(db, &generics);
+
+                if !generics.is_empty() && !enum_ty.could_unify_with_normalized(db, goal) {
+                    return None;
+                }
+
                 // Early exit if some param cannot be filled from lookup
                 let param_trees: Vec<Vec<TypeTree>> = variant
                     .fields(db)
@@ -119,34 +126,27 @@ pub(super) fn type_constructor<'a>(
                         })
                         .collect()
                 };
-                lookup.insert(
-                    parent_enum.ty_with_generics(db, &generics),
-                    variant_trees.iter().cloned(),
-                );
+                lookup.insert(enum_ty.clone(), variant_trees.iter().cloned());
 
-                Some(variant_trees)
+                Some((enum_ty, variant_trees))
             })
-            .flatten()
-            .collect();
-        match trees.is_empty() {
-            true => None,
-            false => Some(trees),
-        }
+            .collect()
     }
-
     defs.iter()
         .filter_map(|def| match def {
             ScopeDef::ModuleDef(ModuleDef::Variant(it)) => {
-                let variant_trees = variant_helper(db, lookup, it.parent_enum(db), *it)?;
+                let variant_trees = variant_helper(db, lookup, it.parent_enum(db), *it, goal);
+                if variant_trees.is_empty() {
+                    return None;
+                }
                 lookup.mark_fulfilled(ScopeDef::ModuleDef(ModuleDef::Variant(*it)));
                 Some(variant_trees)
             }
             ScopeDef::ModuleDef(ModuleDef::Adt(Adt::Enum(enum_))) => {
-                let trees: Vec<TypeTree> = enum_
+                let trees: Vec<(Type, Vec<TypeTree>)> = enum_
                     .variants(db)
                     .into_iter()
-                    .filter_map(|it| variant_helper(db, lookup, enum_.clone(), it))
-                    .flatten()
+                    .flat_map(|it| variant_helper(db, lookup, enum_.clone(), it, goal))
                     .collect();
 
                 if !trees.is_empty() {
@@ -156,47 +156,68 @@ pub(super) fn type_constructor<'a>(
                 Some(trees)
             }
             ScopeDef::ModuleDef(ModuleDef::Adt(Adt::Struct(it))) => {
-                let struct_ty = it.ty(db);
-                let fileds = it.fields(db);
-
-                // Check if all fields are visible, otherwise we cannot fill them
-                if fileds.iter().any(|it| !it.is_visible_from(db, *module)) {
-                    return None;
-                }
-
-                // Early exit if some param cannot be filled from lookup
-                let param_trees: Vec<Vec<TypeTree>> = fileds
+                let generics = db.generic_params(it.id.into());
+                let generic_params = lookup
+                    .iter_types()
+                    .collect::<Vec<_>>() // Force take ownership
                     .into_iter()
-                    .map(|field| lookup.find(db, &field.ty(db)))
-                    .collect::<Option<_>>()?;
+                    .permutations(generics.type_or_consts.len());
 
-                // Note that we need special case for 0 param constructors because of multi cartesian
-                // product
-                let struct_trees: Vec<TypeTree> = if param_trees.is_empty() {
-                    vec![TypeTree::TypeTransformation {
-                        func: TypeTransformation::Struct(*it),
-                        params: Vec::new(),
-                    }]
-                } else {
-                    param_trees
-                        .into_iter()
-                        .multi_cartesian_product()
-                        .take(MAX_VARIATIONS)
-                        .map(|params| TypeTree::TypeTransformation {
-                            func: TypeTransformation::Struct(*it),
-                            params,
-                        })
-                        .collect()
-                };
+                let trees = generic_params
+                    .filter_map(|generics| {
+                        let struct_ty = it.ty_with_generics(db, &generics);
+                        if !generics.is_empty() && !struct_ty.could_unify_with_normalized(db, goal)
+                        {
+                            return None;
+                        }
+                        let fileds = it.fields(db);
+                        // Check if all fields are visible, otherwise we cannot fill them
+                        if fileds.iter().any(|it| !it.is_visible_from(db, *module)) {
+                            return None;
+                        }
 
-                lookup.mark_fulfilled(ScopeDef::ModuleDef(ModuleDef::Adt(Adt::Struct(*it))));
-                lookup.insert(struct_ty.clone(), struct_trees.iter().cloned());
-                Some(struct_trees)
+                        // Early exit if some param cannot be filled from lookup
+                        let param_trees: Vec<Vec<TypeTree>> = fileds
+                            .into_iter()
+                            .map(|field| lookup.find(db, &field.ty(db)))
+                            .collect::<Option<_>>()?;
+
+                        // Note that we need special case for 0 param constructors because of multi cartesian
+                        // product
+                        let struct_trees: Vec<TypeTree> = if param_trees.is_empty() {
+                            vec![TypeTree::TypeTransformation {
+                                func: TypeTransformation::Struct { strukt: *it, generics },
+                                params: Vec::new(),
+                            }]
+                        } else {
+                            param_trees
+                                .into_iter()
+                                .multi_cartesian_product()
+                                .take(MAX_VARIATIONS)
+                                .map(|params| TypeTree::TypeTransformation {
+                                    func: TypeTransformation::Struct {
+                                        strukt: *it,
+                                        generics: generics.clone(),
+                                    },
+                                    params,
+                                })
+                                .collect()
+                        };
+
+                        lookup
+                            .mark_fulfilled(ScopeDef::ModuleDef(ModuleDef::Adt(Adt::Struct(*it))));
+                        lookup.insert(struct_ty.clone(), struct_trees.iter().cloned());
+
+                        Some((struct_ty, struct_trees))
+                    })
+                    .collect();
+                Some(trees)
             }
             _ => None,
         })
         .flatten()
-        .filter_map(|tree| tree.ty(db).could_unify_with_normalized(db, goal).then(|| tree))
+        .filter_map(|(ty, trees)| ty.could_unify_with_normalized(db, goal).then(|| trees))
+        .flatten()
 }
 
 /// Free function tactic

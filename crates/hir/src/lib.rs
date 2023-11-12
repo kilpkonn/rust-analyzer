@@ -1027,6 +1027,17 @@ impl Struct {
         Type::from_def(db, self.id)
     }
 
+    pub fn ty_with_generics(self, db: &dyn HirDatabase, generics: &[Type]) -> Type {
+        let mut generics = generics.iter();
+        let substs = TyBuilder::subst_for_def(db, self.id, None)
+            .fill(|_| {
+                GenericArg::new(Interner, GenericArgData::Ty(generics.next().unwrap().ty.clone()))
+            })
+            .build();
+        let ty = db.ty(self.id.into()).substitute(Interner, &substs);
+        Type::new(db, self.id, ty)
+    }
+
     pub fn constructor_ty(self, db: &dyn HirDatabase) -> Type {
         Type::from_value_def(db, self.id)
     }

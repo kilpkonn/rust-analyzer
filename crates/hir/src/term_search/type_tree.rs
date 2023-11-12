@@ -1,4 +1,4 @@
-use hir_ty::db::HirDatabase;
+use hir_ty::{db::HirDatabase, display::HirDisplay};
 use itertools::Itertools;
 use rustc_hash::FxHashSet;
 
@@ -80,7 +80,7 @@ impl TypeInhabitant {
 pub enum TypeTransformation {
     Function(Function),
     Variant { variant: Variant, generics: Vec<Type> },
-    Struct(Struct),
+    Struct { strukt: Struct, generics: Vec<Type> },
     Field(Field),
 }
 
@@ -91,7 +91,7 @@ impl TypeTransformation {
             Self::Variant { variant, generics } => {
                 variant.parent_enum(db).ty_with_generics(db, generics)
             }
-            Self::Struct(it) => it.ty(db),
+            Self::Struct { strukt, generics } => strukt.ty_with_generics(db, generics),
             Self::Field(it) => it.ty(db),
         }
     }
@@ -125,7 +125,13 @@ impl TypeTransformation {
                     format!("{}{}", gen_module_prefix(it.module(db), items_in_scope, db), sig)
                 }
             }
-            Self::Variant { variant, .. } => {
+            Self::Variant { variant, generics } => {
+                let generics_str = if generics.is_empty() {
+                    String::new()
+                } else {
+                    let generics = generics.iter().map(|it| it.display(db)).join(", ");
+                    format!("::<{generics}>")
+                };
                 let inner = match variant.kind(db) {
                     StructKind::Tuple => {
                         let args = params
@@ -152,11 +158,15 @@ impl TypeTransformation {
                     StructKind::Unit => variant.name(db).display(db).to_string(),
                 };
                 if items_in_scope.contains(&ScopeDef::ModuleDef(ModuleDef::Variant(*variant))) {
-                    inner
+                    format!("{inner}{generics_str}")
                 } else {
                     let parent_enum = variant.parent_enum(db);
-                    let sig =
-                        format!("{}::{}", parent_enum.name(db).display(db).to_string(), inner,);
+                    let sig = format!(
+                        "{}{}::{}",
+                        parent_enum.name(db).display(db).to_string(),
+                        generics_str,
+                        inner,
+                    );
                     if items_in_scope
                         .contains(&ScopeDef::ModuleDef(ModuleDef::Adt(Adt::Enum(parent_enum))))
                     {
@@ -165,8 +175,15 @@ impl TypeTransformation {
                     format!("{}{}", gen_module_prefix(variant.module(db), items_in_scope, db), sig)
                 }
             }
-            Self::Struct(it) => {
-                let fields = it.fields(db);
+            Self::Struct { strukt, generics } => {
+                let generics_str = if generics.is_empty() {
+                    String::new()
+                } else {
+                    let generics = generics.iter().map(|it| it.display(db)).join(", ");
+                    format!("<{generics}>")
+                };
+
+                let fields = strukt.fields(db);
                 let args = params
                     .iter()
                     .zip(fields.iter())
@@ -178,12 +195,19 @@ impl TypeTransformation {
                         )
                     })
                     .join(", ");
-                let sig = format!("{} {{ {} }}", it.name(db).display(db).to_string(), args);
-                if items_in_scope.contains(&ScopeDef::ModuleDef(ModuleDef::Adt(Adt::Struct(*it)))) {
+                let sig = format!(
+                    "{}{} {{ {} }}",
+                    strukt.name(db).display(db).to_string(),
+                    generics_str,
+                    args
+                );
+                if items_in_scope
+                    .contains(&ScopeDef::ModuleDef(ModuleDef::Adt(Adt::Struct(*strukt))))
+                {
                     return sig;
                 }
 
-                format!("{}{}", gen_module_prefix(it.module(db), items_in_scope, db), sig)
+                format!("{}{}", gen_module_prefix(strukt.module(db), items_in_scope, db), sig)
             }
             Self::Field(it) => {
                 let strukt = params
