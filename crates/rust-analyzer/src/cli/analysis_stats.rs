@@ -376,7 +376,7 @@ impl flags::AnalysisStats {
                     None => continue,
                 };
                 let target_ty = match sema.type_of_expr(&expr) {
-                    Some(it) => it,
+                    Some(it) => it.adjusted(),
                     None => continue, // Failed to infer type
                 };
 
@@ -398,7 +398,7 @@ impl flags::AnalysisStats {
                     .take(usize::from(range.end()) - usize::from(range.start()))
                     .collect();
 
-                let scope = match sema.scope(&node) {
+                let scope = match sema.scope(&expected_tail.syntax()) {
                     Some(it) => it,
                     None => continue,
                 };
@@ -409,12 +409,8 @@ impl flags::AnalysisStats {
                     defs.insert(def);
                 });
 
-                let found_terms = hir::term_search::term_search(
-                    &sema,
-                    scope.module(),
-                    defs.clone(),
-                    &target_ty.adjusted(),
-                );
+                let found_terms =
+                    hir::term_search::term_search(&sema, scope.module(), defs.clone(), &target_ty);
 
                 if found_terms.is_empty() {
                     acc.tail_expr_no_term += 1;
@@ -447,8 +443,9 @@ impl flags::AnalysisStats {
                                 if let Some(mut err_idx) = err.find("error[E") {
                                     err_idx += 7;
                                     let err_code = &err[err_idx..err_idx + 4];
-                                    if err_code == "0034" {
+                                    if err_code == "0308" {
                                         println!("{}", err);
+                                        dbg!(&term);
                                         panic!("{}", generated);
                                     }
                                     acc.error_codes

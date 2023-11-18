@@ -131,4 +131,15 @@ mod tests {
             fn f() { let a: i32 = 1; let b: Foo = Foo(a); }"#,
         )
     }
+
+    #[test]
+    fn test_shadowing() {
+        check_assist(
+            term_search,
+            r#"macro_rules! todo { () => (_) };
+            fn f() { let a: i32 = 1; let b: i32 = 2; let a: u32 = 0; let c: i32 = todo$0!(); }"#,
+            r#"macro_rules! todo { () => (_) };
+            fn f() { let a: i32 = 1; let b: i32 = 2; let a: u32 = 0; let c: i32 = b; }"#,
+        )
+    }
 }
