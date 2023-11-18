@@ -78,7 +78,8 @@ impl TypeTransformation {
         let db = sema_scope.db;
         match self {
             Self::Function { func, .. } => {
-                if func.has_self_param(db) {
+                if let Some(self_param) = func.self_param(db) {
+                    let func_name = func.name(db).display(db.upcast()).to_string();
                     let target = params
                         .first()
                         .expect("no self param")
@@ -88,12 +89,26 @@ impl TypeTransformation {
                         .skip(1)
                         .map(|f| f.gen_source_code(items_in_scope, sema_scope))
                         .join(", ");
-                    format!(
-                        "{}.{}({})",
-                        target,
-                        func.name(db).display(db.upcast()).to_string(),
-                        args
-                    )
+
+                    match func.as_assoc_item(db).unwrap().containing_trait_or_trait_impl(db) {
+                        Some(trait_) => {
+                            let trait_name = gen_module_prefix(
+                                db,
+                                &sema_scope.module(),
+                                &ModuleDef::Trait(trait_),
+                            );
+                            let target = match self_param.access(db) {
+                                crate::Access::Shared => format!("&{target}"),
+                                crate::Access::Exclusive => format!("&mut {target}"),
+                                crate::Access::Owned => target,
+                            };
+                            match args.is_empty() {
+                                true => format!("{trait_name}::{func_name}({target})",),
+                                false => format!("{trait_name}::{func_name}({target}, {args})",),
+                            }
+                        }
+                        None => format!("{target}.{func_name}({args})"),
+                    }
                 } else {
                     let args = params
                         .iter()

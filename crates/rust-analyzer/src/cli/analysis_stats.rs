@@ -8,8 +8,7 @@ use std::{
 
 use hir::{
     db::{DefDatabase, ExpandDatabase, HirDatabase},
-    Adt, AssocItem, Crate, DefWithBody, HasSource, HirDisplay, Module, ModuleDef, Name, PrefixKind,
-    Trait,
+    Adt, AssocItem, Crate, DefWithBody, HasSource, HirDisplay, ModuleDef, Name,
 };
 use hir_def::{
     body::{BodySourceMap, SyntheticSyntax},
@@ -428,23 +427,6 @@ impl flags::AnalysisStats {
                     s.chars().into_iter().filter(|c| !c.is_whitespace()).collect()
                 }
 
-                fn gen_trait_import(
-                    db: &dyn HirDatabase,
-                    module: &Module,
-                    trait_: &Trait,
-                ) -> String {
-                    // let mut import_path = trait_.name(db).display(db.upcast()).to_string();
-                    let path = module.find_use_path_prefixed(
-                        db.upcast(),
-                        ModuleDef::Trait(*trait_),
-                        PrefixKind::ByCrate,
-                        true,
-                    );
-                    let path =
-                        path.map(|it| it.display(db.upcast()).to_string()).unwrap_or(String::new());
-                    format!("use {path};")
-                }
-
                 let mut syntax_hit_found = false;
                 for term in found_terms {
                     let generated = term.gen_source_code(&defs, &scope);
@@ -453,14 +435,7 @@ impl flags::AnalysisStats {
                     // Validate if type-checks
                     let mut txt = file_txt.to_string();
 
-                    // Insert import for now
-                    let traits = term
-                        .traits_used(db)
-                        .iter()
-                        .map(|it| gen_trait_import(db, &scope.module(), it))
-                        .join("\n");
-                    let generated = format!("{traits}\n{generated}");
-                    let edit = ide::TextEdit::replace(range, generated);
+                    let edit = ide::TextEdit::replace(range, generated.clone());
                     edit.apply(&mut txt);
 
                     if self.validate_term_search {
@@ -474,6 +449,7 @@ impl flags::AnalysisStats {
                                     let err_code = &err[err_idx..err_idx + 4];
                                     if err_code == "0034" {
                                         println!("{}", err);
+                                        panic!("{}", generated);
                                     }
                                     acc.error_codes
                                         .entry(err_code.to_owned())

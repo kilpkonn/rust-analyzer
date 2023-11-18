@@ -265,7 +265,7 @@ impl Foo for i32 {
 }
 fn asd() -> Bar {
     let a: i32 = 1;
-    a.foo()
+    Foo::foo(a)
 }
 ",
         );
@@ -352,7 +352,7 @@ impl Foo for i32 {
 }
 fn main() {
     let a: i32 = 1;
-    let c: Bar = a.foo();
+    let c: Bar = Foo::foo(&a);
 }"#,
         );
     }
