@@ -118,4 +118,17 @@ mod tests {
             fn f() { let a: i32 = 1; let b: Option<i32> = Option::Some(a); }"#,
         )
     }
+
+    #[test]
+    fn test_newtype() {
+        check_assist(
+            term_search,
+            r#"macro_rules! todo { () => (_) };
+            struct Foo(i32);
+            fn f() { let a: i32 = 1; let b: Foo = todo$0!(); }"#,
+            r#"macro_rules! todo { () => (_) };
+            struct Foo(i32);
+            fn f() { let a: i32 = 1; let b: Foo = Foo(a); }"#,
+        )
+    }
 }

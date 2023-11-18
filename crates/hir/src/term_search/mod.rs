@@ -1,4 +1,5 @@
 use hir_ty::db::HirDatabase;
+use itertools::Itertools;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::{Module, ScopeDef, Semantics, Type};
@@ -120,5 +121,5 @@ pub fn term_search<DB: HirDatabase>(
         }
     }
 
-    solutions
+    solutions.into_iter().unique().collect()
 }

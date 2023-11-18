@@ -3,8 +3,8 @@ use itertools::Itertools;
 use rustc_hash::FxHashSet;
 
 use crate::{
-    Adt, Const, ConstParam, Field, Function, Local, Module, ModuleDef, ScopeDef, Semantics, Static,
-    Struct, StructKind, Type, Variant,
+    Adt, AsAssocItem, Const, ConstParam, Field, Function, Local, Module, ModuleDef, ScopeDef,
+    Semantics, Static, Struct, StructKind, Trait, Type, Variant,
 };
 
 fn gen_module_prefix(
@@ -78,21 +78,29 @@ impl TypeInhabitant {
 
 #[derive(Debug, Clone, Eq, Hash, PartialEq)]
 pub enum TypeTransformation {
-    Function(Function),
+    Function { func: Function, generics: Vec<Type> },
     Variant { variant: Variant, generics: Vec<Type> },
     Struct { strukt: Struct, generics: Vec<Type> },
     Field(Field),
 }
 
 impl TypeTransformation {
-    fn ret_ty(&self, db: &dyn HirDatabase) -> Type {
+    fn ret_ty(&self, db: &dyn HirDatabase, params: &[TypeTree]) -> Type {
         match self {
-            Self::Function(it) => it.ret_type(db),
+            Self::Function { func, generics } => match func.has_self_param(db) {
+                true => func.ret_type_with_generics(
+                    db,
+                    params[0].ty(db).type_arguments().chain(generics.iter().cloned()),
+                ),
+                false => func.ret_type_with_generics(db, generics.iter().cloned()),
+            },
             Self::Variant { variant, generics } => {
-                variant.parent_enum(db).ty_with_generics(db, generics)
+                variant.parent_enum(db).ty_with_generics(db, generics.iter().cloned())
             }
-            Self::Struct { strukt, generics } => strukt.ty_with_generics(db, generics),
-            Self::Field(it) => it.ty(db),
+            Self::Struct { strukt, generics } => {
+                strukt.ty_with_generics(db, generics.iter().cloned())
+            }
+            Self::Field(it) => it.ty_with_generics(db, params[0].ty(db).type_arguments()),
         }
     }
     fn gen_source_code<DB: HirDatabase>(
@@ -103,8 +111,8 @@ impl TypeTransformation {
     ) -> String {
         let db = sema.db;
         match self {
-            Self::Function(it) => {
-                if it.has_self_param(db) {
+            Self::Function { func, .. } => {
+                if func.has_self_param(db) {
                     let target = params
                         .first()
                         .expect("no self param")
@@ -114,15 +122,15 @@ impl TypeTransformation {
                         .skip(1)
                         .map(|f| f.gen_source_code(items_in_scope, sema))
                         .join(", ");
-                    format!("{}.{}({})", target, it.name(db).display(db).to_string(), args)
+                    format!("{}.{}({})", target, func.name(db).display(db).to_string(), args)
                 } else {
                     let args =
                         params.iter().map(|f| f.gen_source_code(items_in_scope, sema)).join(", ");
-                    let sig = format!("{}({})", it.name(db).display(db).to_string(), args);
-                    if items_in_scope.contains(&ScopeDef::ModuleDef(ModuleDef::Function(*it))) {
+                    let sig = format!("{}({})", func.name(db).display(db).to_string(), args);
+                    if items_in_scope.contains(&ScopeDef::ModuleDef(ModuleDef::Function(*func))) {
                         return sig;
                     }
-                    format!("{}{}", gen_module_prefix(it.module(db), items_in_scope, db), sig)
+                    format!("{}{}", gen_module_prefix(func.module(db), items_in_scope, db), sig)
                 }
             }
             Self::Variant { variant, generics } => {
@@ -178,11 +186,12 @@ impl TypeTransformation {
             Self::Struct { strukt, generics } => {
                 let sig = match strukt.kind(db) {
                     StructKind::Tuple => {
+                        let name = strukt.name(db).display(db).to_string();
                         let args = params
                             .iter()
                             .map(|a| a.gen_source_code(items_in_scope, sema))
                             .join(", ");
-                        format!("({})", args)
+                        format!("{name}({args})")
                     }
                     StructKind::Record => {
                         let fields = strukt.fields(db);
@@ -256,7 +265,28 @@ impl TypeTree {
     pub fn ty(&self, db: &dyn HirDatabase) -> Type {
         match self {
             TypeTree::TypeInhabitant(it) => it.ty(db),
-            TypeTree::TypeTransformation { func, .. } => func.ret_ty(db),
+            TypeTree::TypeTransformation { func, params } => func.ret_ty(db, params),
         }
+    }
+
+    pub fn traits_used(&self, db: &dyn HirDatabase) -> Vec<Trait> {
+        let mut res = Vec::new();
+
+        match self {
+            TypeTree::TypeTransformation {
+                func: TypeTransformation::Function { func, .. },
+                params,
+            } => {
+                res.extend(params.iter().flat_map(|it| it.traits_used(db)));
+                if let Some(it) = func.as_assoc_item(db) {
+                    if let Some(it) = it.containing_trait_or_trait_impl(db) {
+                        res.push(it);
+                    }
+                }
+            }
+            _ => (),
+        }
+
+        res
     }
 }

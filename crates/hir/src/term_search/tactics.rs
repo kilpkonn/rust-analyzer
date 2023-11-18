@@ -1,3 +1,4 @@
+use hir_def::generics::TypeOrConstParamData;
 use hir_ty::db::HirDatabase;
 use itertools::Itertools;
 use rustc_hash::FxHashSet;
@@ -92,7 +93,7 @@ pub(super) fn type_constructor<'a>(
 
         generic_params
             .filter_map(|generics| {
-                let enum_ty = parent_enum.ty_with_generics(db, &generics);
+                let enum_ty = parent_enum.ty_with_generics(db, generics.iter().cloned());
 
                 if !generics.is_empty() && !enum_ty.could_unify_with_normalized(db, goal) {
                     return None;
@@ -102,7 +103,9 @@ pub(super) fn type_constructor<'a>(
                 let param_trees: Vec<Vec<TypeTree>> = variant
                     .fields(db)
                     .into_iter()
-                    .map(|field| lookup.find(db, &field.ty_with_generics(db, &generics)))
+                    .map(|field| {
+                        lookup.find(db, &field.ty_with_generics(db, generics.iter().cloned()))
+                    })
                     .collect::<Option<_>>()?;
 
                 // Note that we need special case for 0 param constructors because of multi cartesian
@@ -165,7 +168,7 @@ pub(super) fn type_constructor<'a>(
 
                 let trees = generic_params
                     .filter_map(|generics| {
-                        let struct_ty = it.ty_with_generics(db, &generics);
+                        let struct_ty = it.ty_with_generics(db, generics.iter().cloned());
                         if !generics.is_empty() && !struct_ty.could_unify_with_normalized(db, goal)
                         {
                             return None;
@@ -240,49 +243,80 @@ pub(super) fn free_function<'a>(
     defs.iter()
         .filter_map(|def| match def {
             ScopeDef::ModuleDef(ModuleDef::Function(it)) => {
-                let ret_ty = it.ret_type(db);
-                // Filter out private and unsafe functions
-                if !it.is_visible_from(db, *module)
-                    || it.is_unsafe_to_call(db)
-                    || it.is_unstable(db)
-                    || ret_ty.is_reference()
-                    || ret_ty.is_raw_ptr()
+                let generics = db.generic_params(it.id.into());
+
+                // Skip functions that require const generics
+                if generics
+                    .type_or_consts
+                    .values()
+                    .any(|it| matches!(it, TypeOrConstParamData::ConstParamData(_)))
                 {
                     return None;
                 }
 
-                // Early exit if some param cannot be filled from lookup
-                let param_trees: Vec<Vec<TypeTree>> = it
-                    .params_without_self(db)
+                // Ignore all the generics for now as they kill the performance
+                if generics.type_or_consts.len() > 0 {
+                    return None;
+                }
+
+                let generic_params = lookup
+                    .iter_types()
+                    .collect::<Vec<_>>() // Force take ownership
                     .into_iter()
-                    .map(|field| lookup.find(db, &field.ty()))
-                    .collect::<Option<_>>()?;
+                    .permutations(generics.type_or_consts.len());
 
-                // Note that we need special case for 0 param constructors because of multi cartesian
-                // product
-                let fn_trees: Vec<TypeTree> = if param_trees.is_empty() {
-                    vec![TypeTree::TypeTransformation {
-                        func: TypeTransformation::Function(*it),
-                        params: Vec::new(),
-                    }]
-                } else {
-                    param_trees
-                        .into_iter()
-                        .multi_cartesian_product()
-                        .take(MAX_VARIATIONS)
-                        .map(|params| TypeTree::TypeTransformation {
-                            func: TypeTransformation::Function(*it),
-                            params,
-                        })
-                        .collect()
-                };
+                let trees: Vec<_> = generic_params
+                    .filter_map(|generics| {
+                        let ret_ty = it.ret_type_with_generics(db, generics.iter().cloned());
+                        // Filter out private and unsafe functions
+                        if !it.is_visible_from(db, *module)
+                            || it.is_unsafe_to_call(db)
+                            || it.is_unstable(db)
+                            || ret_ty.is_reference()
+                            || ret_ty.is_raw_ptr()
+                        {
+                            return None;
+                        }
 
-                lookup.mark_fulfilled(ScopeDef::ModuleDef(ModuleDef::Function(*it)));
-                lookup.insert(ret_ty.clone(), fn_trees.iter().cloned());
-                Some((ret_ty, fn_trees))
+                        // Early exit if some param cannot be filled from lookup
+                        let param_trees: Vec<Vec<TypeTree>> = it
+                            .params_without_self_with_generics(db, generics.iter().cloned())
+                            .into_iter()
+                            .map(|field| lookup.find(db, &field.ty()))
+                            .collect::<Option<_>>()?;
+
+                        // Note that we need special case for 0 param constructors because of multi cartesian
+                        // product
+                        let fn_trees: Vec<TypeTree> = if param_trees.is_empty() {
+                            vec![TypeTree::TypeTransformation {
+                                func: TypeTransformation::Function { func: *it, generics },
+                                params: Vec::new(),
+                            }]
+                        } else {
+                            param_trees
+                                .into_iter()
+                                .multi_cartesian_product()
+                                .take(MAX_VARIATIONS)
+                                .map(|params| TypeTree::TypeTransformation {
+                                    func: TypeTransformation::Function {
+                                        func: *it,
+                                        generics: generics.clone(),
+                                    },
+                                    params,
+                                })
+                                .collect()
+                        };
+
+                        lookup.mark_fulfilled(ScopeDef::ModuleDef(ModuleDef::Function(*it)));
+                        lookup.insert(ret_ty.clone(), fn_trees.iter().cloned());
+                        Some((ret_ty, fn_trees))
+                    })
+                    .collect();
+                Some(trees)
             }
             _ => None,
         })
+        .flatten()
         .filter_map(|(ty, trees)| ty.could_unify_with_normalized(db, goal).then(|| trees))
         .flatten()
 }
@@ -311,19 +345,24 @@ pub(super) fn impl_method<'a>(
         .flat_map(|ty| {
             Impl::all_for_type(db, ty.clone()).into_iter().map(move |imp| (ty.clone(), imp))
         })
-        .flat_map(|(ty, imp)| imp.items(db).into_iter().map(move |item| (ty.clone(), item)))
-        .filter_map(|(ty, it)| match it {
-            AssocItem::Function(f) => Some((ty, f)),
+        .flat_map(|(ty, imp)| imp.items(db).into_iter().map(move |item| (imp, ty.clone(), item)))
+        .filter_map(|(imp, ty, it)| match it {
+            AssocItem::Function(f) => Some((imp, ty, f)),
             _ => None,
         })
-        .filter_map(|(ty, it)| {
-            let ret_ty = it.ret_type(db);
-            // Filter out private and unsafe functions as well as functions that return references
-            if !it.is_visible_from(db, *module)
-                || it.is_unsafe_to_call(db)
-                || it.is_unstable(db)
-                || ret_ty.is_reference()
-                || ret_ty.is_raw_ptr()
+        .filter_map(|(imp, ty, it)| {
+            let fn_generics = db.generic_params(it.id.into());
+            let imp_generics = db.generic_params(imp.id.into());
+
+            // Ignore impl if it has const type arguments
+            if fn_generics
+                .type_or_consts
+                .values()
+                .any(|it| matches!(it, TypeOrConstParamData::ConstParamData(_)))
+                || imp_generics
+                    .type_or_consts
+                    .values()
+                    .any(|it| matches!(it, TypeOrConstParamData::ConstParamData(_)))
             {
                 return None;
             }
@@ -333,40 +372,77 @@ pub(super) fn impl_method<'a>(
                 return None;
             }
 
-            // Ignore functions that do not change the type
-            if ty.could_unify_with_normalized(db, &ret_ty) {
+            // Filter out private and unsafe functions
+            if !it.is_visible_from(db, *module) || it.is_unsafe_to_call(db) || it.is_unstable(db) {
                 return None;
             }
 
-            let self_ty = it.self_param(db).expect("No self param").ty(db);
-
-            // Ignore functions that have different self type
-            if !self_ty.autoderef(db).any(|s_ty| ty.could_unify_with_normalized(db, &s_ty)) {
+            // Ignore all the generics for now as they kill the performance
+            if imp_generics.type_or_consts.len() + fn_generics.type_or_consts.len() > 0 {
                 return None;
             }
 
-            let target_type_trees = lookup.find(db, &ty).expect("Type not in lookup");
-
-            // Early exit if some param cannot be filled from lookup
-            let param_trees: Vec<Vec<TypeTree>> = it
-                .params_without_self(db)
+            let generic_params = lookup
+                .iter_types()
+                .collect::<Vec<_>>() // Force take ownership
                 .into_iter()
-                .map(|field| lookup.find(db, &field.ty()))
-                .collect::<Option<_>>()?;
+                .permutations(imp_generics.type_or_consts.len() + fn_generics.type_or_consts.len());
 
-            let fn_trees: Vec<TypeTree> = std::iter::once(target_type_trees)
-                .chain(param_trees.into_iter())
-                .multi_cartesian_product()
-                .take(MAX_VARIATIONS)
-                .map(|params| TypeTree::TypeTransformation {
-                    func: TypeTransformation::Function(it),
-                    params,
+            let trees: Vec<_> = generic_params
+                .filter_map(|generics| {
+                    let ret_ty = it.ret_type_with_generics(
+                        db,
+                        ty.type_arguments().chain(generics.iter().cloned()),
+                    );
+                    // Filter out functions that return references
+                    if ret_ty.is_reference() || ret_ty.is_raw_ptr() {
+                        return None;
+                    }
+
+                    // Ignore functions that do not change the type
+                    if ty.could_unify_with_normalized(db, &ret_ty) {
+                        return None;
+                    }
+
+                    let self_ty = it
+                        .self_param(db)
+                        .expect("No self param")
+                        .ty_with_generics(db, ty.type_arguments().chain(generics.iter().cloned()));
+
+                    // Ignore functions that have different self type
+                    if !self_ty.autoderef(db).any(|s_ty| ty == s_ty) {
+                        return None;
+                    }
+
+                    let target_type_trees = lookup.find(db, &ty).expect("Type not in lookup");
+
+                    // Early exit if some param cannot be filled from lookup
+                    let param_trees: Vec<Vec<TypeTree>> = it
+                        .params_without_self_with_generics(
+                            db,
+                            ty.type_arguments().chain(generics.iter().cloned()),
+                        )
+                        .into_iter()
+                        .map(|field| lookup.find(db, &field.ty()))
+                        .collect::<Option<_>>()?;
+
+                    let fn_trees: Vec<TypeTree> = std::iter::once(target_type_trees)
+                        .chain(param_trees.into_iter())
+                        .multi_cartesian_product()
+                        .take(MAX_VARIATIONS)
+                        .map(|params| TypeTree::TypeTransformation {
+                            func: TypeTransformation::Function { func: it, generics: Vec::new() },
+                            params,
+                        })
+                        .collect();
+
+                    lookup.insert(ret_ty.clone(), fn_trees.iter().cloned());
+                    Some((ret_ty, fn_trees))
                 })
                 .collect();
-
-            lookup.insert(ret_ty.clone(), fn_trees.iter().cloned());
-            Some((ret_ty, fn_trees))
+            Some(trees)
         })
+        .flatten()
         .filter_map(|(ty, trees)| ty.could_unify_with_normalized(db, goal).then(|| trees))
         .flatten()
 }
