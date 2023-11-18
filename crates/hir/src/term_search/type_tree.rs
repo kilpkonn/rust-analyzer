@@ -4,26 +4,12 @@ use rustc_hash::FxHashSet;
 
 use crate::{
     Adt, AsAssocItem, Const, ConstParam, Field, Function, Local, Module, ModuleDef, ScopeDef,
-    Semantics, Static, Struct, StructKind, Trait, Type, Variant,
+    SemanticsScope, Static, Struct, StructKind, Trait, Type, Variant,
 };
 
-fn gen_module_prefix(
-    mut module: Module,
-    items_in_scope: &FxHashSet<ScopeDef>,
-    db: &dyn HirDatabase,
-) -> String {
-    let mut prefix = String::new();
-    while !items_in_scope.contains(&ScopeDef::ModuleDef(ModuleDef::Module(module))) {
-        match module.name(db) {
-            Some(m) => prefix = format!("{}::{}", m.display(db.upcast()).to_string(), prefix),
-            None => (),
-        };
-        match module.parent(db) {
-            Some(m) => module = m,
-            None => break,
-        };
-    }
-    prefix
+fn gen_module_prefix(db: &dyn HirDatabase, module: &Module, def: &ModuleDef) -> String {
+    let path = module.find_use_path(db.upcast(), *def, true);
+    path.map(|it| it.display(db.upcast()).to_string()).unwrap_or(String::new())
 }
 
 #[derive(Debug, Clone, Eq, Hash, PartialEq)]
@@ -35,35 +21,15 @@ pub enum TypeInhabitant {
 }
 
 impl TypeInhabitant {
-    fn gen_source_code<DB: HirDatabase>(
-        &self,
-        items_in_scope: &FxHashSet<ScopeDef>,
-        sema: &Semantics<'_, DB>,
-    ) -> String {
-        let db = sema.db;
-        let (name, module) = match self {
-            TypeInhabitant::Const(it) => {
-                let name = match it.name(db) {
-                    Some(it) => it.display(db).to_string(),
-                    None => String::from("_"),
-                };
-                if items_in_scope.contains(&ScopeDef::ModuleDef(ModuleDef::Const(*it))) {
-                    return name;
-                }
-                (name, it.module(db))
-            }
-            TypeInhabitant::Static(it) => {
-                let name = it.name(db).display(db).to_string();
-                if items_in_scope.contains(&ScopeDef::ModuleDef(ModuleDef::Static(*it))) {
-                    return name;
-                }
-                (name, it.module(db))
-            }
-            TypeInhabitant::Local(it) => return it.name(db).display(db).to_string(),
-            TypeInhabitant::ConstParam(it) => return it.name(db).display(db).to_string(),
+    fn gen_source_code(&self, sema_scope: &SemanticsScope<'_>) -> String {
+        let db = sema_scope.db;
+        let def = match self {
+            TypeInhabitant::Const(it) => ModuleDef::Const(*it),
+            TypeInhabitant::Static(it) => ModuleDef::Static(*it),
+            TypeInhabitant::Local(it) => return it.name(db).display(db.upcast()).to_string(),
+            TypeInhabitant::ConstParam(it) => return it.name(db).display(db.upcast()).to_string(),
         };
-        let prefix = gen_module_prefix(module, items_in_scope, db);
-        format!("{}{}", prefix, name)
+        gen_module_prefix(db, &sema_scope.module(), &def)
     }
 
     fn ty(&self, db: &dyn HirDatabase) -> Type {
@@ -103,34 +69,46 @@ impl TypeTransformation {
             Self::Field(it) => it.ty_with_generics(db, params[0].ty(db).type_arguments()),
         }
     }
-    fn gen_source_code<DB: HirDatabase>(
+    fn gen_source_code(
         &self,
         params: &[TypeTree],
         items_in_scope: &FxHashSet<ScopeDef>,
-        sema: &Semantics<'_, DB>,
+        sema_scope: &SemanticsScope<'_>,
     ) -> String {
-        let db = sema.db;
+        let db = sema_scope.db;
         match self {
             Self::Function { func, .. } => {
                 if func.has_self_param(db) {
                     let target = params
                         .first()
                         .expect("no self param")
-                        .gen_source_code(items_in_scope, sema);
+                        .gen_source_code(items_in_scope, sema_scope);
                     let args = params
                         .iter()
                         .skip(1)
-                        .map(|f| f.gen_source_code(items_in_scope, sema))
+                        .map(|f| f.gen_source_code(items_in_scope, sema_scope))
                         .join(", ");
-                    format!("{}.{}({})", target, func.name(db).display(db).to_string(), args)
+                    format!(
+                        "{}.{}({})",
+                        target,
+                        func.name(db).display(db.upcast()).to_string(),
+                        args
+                    )
                 } else {
-                    let args =
-                        params.iter().map(|f| f.gen_source_code(items_in_scope, sema)).join(", ");
-                    let sig = format!("{}({})", func.name(db).display(db).to_string(), args);
+                    let args = params
+                        .iter()
+                        .map(|f| f.gen_source_code(items_in_scope, sema_scope))
+                        .join(", ");
+                    let sig =
+                        format!("{}({})", func.name(db).display(db.upcast()).to_string(), args);
                     if items_in_scope.contains(&ScopeDef::ModuleDef(ModuleDef::Function(*func))) {
                         return sig;
                     }
-                    format!("{}{}", gen_module_prefix(func.module(db), items_in_scope, db), sig)
+                    format!(
+                        "{}{}",
+                        gen_module_prefix(db, &sema_scope.module(), &ModuleDef::Function(*func)),
+                        sig
+                    )
                 }
             }
             Self::Variant { variant, generics } => {
@@ -138,10 +116,9 @@ impl TypeTransformation {
                     StructKind::Tuple => {
                         let args = params
                             .iter()
-                            .map(|f| f.gen_source_code(items_in_scope, sema))
+                            .map(|f| f.gen_source_code(items_in_scope, sema_scope))
                             .join(", ");
-                        let name = variant.name(db).display(db).to_string();
-                        format!("{name}({args})")
+                        format!("({args})")
                     }
                     StructKind::Record => {
                         let fields = variant.fields(db);
@@ -151,47 +128,34 @@ impl TypeTransformation {
                             .map(|(a, f)| {
                                 format!(
                                     "{}: {}",
-                                    f.name(db).display(db).to_string(),
-                                    a.gen_source_code(items_in_scope, sema)
+                                    f.name(db).display(db.upcast()).to_string(),
+                                    a.gen_source_code(items_in_scope, sema_scope)
                                 )
                             })
                             .join(", ");
-                        let name = variant.name(db).display(db).to_string();
-                        format!("{name} {{ {args} }}")
+                        format!("{{ {args} }}")
                     }
                     StructKind::Unit => match generics.is_empty() {
-                        true => variant.name(db).display(db).to_string(),
+                        true => String::new(),
                         false => {
-                            let name = variant.name(db).display(db).to_string();
                             let generics = generics.iter().map(|it| it.display(db)).join(", ");
-                            format!("{name}::<{generics}>")
+                            format!("::<{generics}>")
                         }
                     },
                 };
-                if items_in_scope.contains(&ScopeDef::ModuleDef(ModuleDef::Variant(*variant))) {
-                    inner
-                } else {
-                    let parent_enum = variant.parent_enum(db);
-                    let name = parent_enum.name(db).display(db).to_string();
-                    let sig = format!("{name}::{inner}",);
-                    if items_in_scope
-                        .contains(&ScopeDef::ModuleDef(ModuleDef::Adt(Adt::Enum(parent_enum))))
-                    {
-                        return sig;
-                    }
-                    let prefix = gen_module_prefix(variant.module(db), items_in_scope, db);
-                    format!("{prefix}{sig}")
-                }
+
+                let prefix =
+                    gen_module_prefix(db, &sema_scope.module(), &ModuleDef::Variant(*variant));
+                format!("{prefix}{inner}")
             }
             Self::Struct { strukt, generics } => {
-                let sig = match strukt.kind(db) {
+                let inner = match strukt.kind(db) {
                     StructKind::Tuple => {
-                        let name = strukt.name(db).display(db).to_string();
                         let args = params
                             .iter()
-                            .map(|a| a.gen_source_code(items_in_scope, sema))
+                            .map(|a| a.gen_source_code(items_in_scope, sema_scope))
                             .join(", ");
-                        format!("{name}({args})")
+                        format!("({args})")
                     }
                     StructKind::Record => {
                         let fields = strukt.fields(db);
@@ -201,39 +165,35 @@ impl TypeTransformation {
                             .map(|(a, f)| {
                                 format!(
                                     "{}: {}",
-                                    f.name(db).display(db).to_string(),
-                                    a.gen_source_code(items_in_scope, sema)
+                                    f.name(db).display(db.upcast()).to_string(),
+                                    a.gen_source_code(items_in_scope, sema_scope)
                                 )
                             })
                             .join(", ");
-                        let name = strukt.name(db).display(db).to_string();
-                        format!("{name} {{ {args} }}")
+                        format!(" {{ {args} }}")
                     }
                     StructKind::Unit => match generics.is_empty() {
-                        true => strukt.name(db).display(db).to_string(),
+                        true => String::new(),
                         false => {
-                            let name = strukt.name(db).display(db).to_string();
                             let generics = generics.iter().map(|it| it.display(db)).join(", ");
-                            format!("{name}::<{generics}>")
+                            format!("::<{generics}>")
                         }
                     },
                 };
 
-                if items_in_scope
-                    .contains(&ScopeDef::ModuleDef(ModuleDef::Adt(Adt::Struct(*strukt))))
-                {
-                    return sig;
-                }
-
-                let prefix = gen_module_prefix(strukt.module(db), items_in_scope, db);
-                format!("{prefix}{sig}")
+                let prefix = gen_module_prefix(
+                    db,
+                    &sema_scope.module(),
+                    &ModuleDef::Adt(Adt::Struct(*strukt)),
+                );
+                format!("{prefix}{inner}")
             }
             Self::Field(it) => {
                 let strukt = params
                     .first()
                     .expect("No params for struct field")
-                    .gen_source_code(items_in_scope, sema);
-                let field = it.name(db).display(db).to_string();
+                    .gen_source_code(items_in_scope, sema_scope);
+                let field = it.name(db).display(db.upcast()).to_string();
                 format!("{strukt}.{field}")
             }
         }
@@ -249,15 +209,15 @@ pub enum TypeTree {
 }
 
 impl TypeTree {
-    pub fn gen_source_code<DB: HirDatabase>(
+    pub fn gen_source_code(
         &self,
         items_in_scope: &FxHashSet<ScopeDef>,
-        sema: &Semantics<'_, DB>,
+        sema_scope: &SemanticsScope<'_>,
     ) -> String {
         match self {
-            TypeTree::TypeInhabitant(it) => it.gen_source_code(items_in_scope, sema),
+            TypeTree::TypeInhabitant(it) => it.gen_source_code(sema_scope),
             TypeTree::TypeTransformation { func, params } => {
-                func.gen_source_code(&params, items_in_scope, sema)
+                func.gen_source_code(&params, items_in_scope, sema_scope)
             }
         }
     }

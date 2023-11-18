@@ -48,7 +48,7 @@ pub(crate) fn term_search(acc: &mut Assists, ctx: &AssistContext<'_>) -> Option<
             "Term search",
             goal_range,
             |builder| {
-                builder.replace(goal_range, path.gen_source_code(&defs, &ctx.sema));
+                builder.replace(goal_range, path.gen_source_code(&defs, &scope));
             },
         );
     }

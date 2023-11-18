@@ -447,7 +447,7 @@ impl flags::AnalysisStats {
 
                 let mut syntax_hit_found = false;
                 for term in found_terms {
-                    let generated = term.gen_source_code(&defs, &sema);
+                    let generated = term.gen_source_code(&defs, &scope);
                     syntax_hit_found |= trim(&original_text) == trim(&generated);
 
                     // Validate if type-checks
@@ -472,7 +472,7 @@ impl flags::AnalysisStats {
                                 if let Some(mut err_idx) = err.find("error[E") {
                                     err_idx += 7;
                                     let err_code = &err[err_idx..err_idx + 4];
-                                    if err_code == "0423" {
+                                    if err_code == "0034" {
                                         println!("{}", err);
                                     }
                                     acc.error_codes
