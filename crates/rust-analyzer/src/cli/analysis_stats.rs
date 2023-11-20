@@ -443,11 +443,10 @@ impl flags::AnalysisStats {
                                 if let Some(mut err_idx) = err.find("error[E") {
                                     err_idx += 7;
                                     let err_code = &err[err_idx..err_idx + 4];
-                                    if err_code == "0308" {
+                                    // if err_code == "0308" {
                                         println!("{}", err);
-                                        dbg!(&term);
-                                        panic!("{}", generated);
-                                    }
+                                        println!("{}", generated);
+                                    // }
                                     acc.error_codes
                                         .entry(err_code.to_owned())
                                         .and_modify(|n| *n += 1)

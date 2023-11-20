@@ -85,6 +85,22 @@ pub(super) fn type_constructor<'a>(
         goal: &Type,
     ) -> Vec<(Type, Vec<TypeTree>)> {
         let generics = db.generic_params(variant.parent.id.into());
+
+        // Ignore enums with const generics
+        if generics
+            .type_or_consts
+            .values()
+            .any(|it| matches!(it, TypeOrConstParamData::ConstParamData(_)))
+        {
+            return Vec::new();
+        }
+
+        // We currently do not check lifetime bounds so ignore all types that have something to do
+        // with them
+        if !generics.lifetimes.is_empty() {
+            return Vec::new();
+        }
+
         let generic_params = lookup
             .iter_types()
             .collect::<Vec<_>>() // Force take ownership
@@ -160,6 +176,22 @@ pub(super) fn type_constructor<'a>(
             }
             ScopeDef::ModuleDef(ModuleDef::Adt(Adt::Struct(it))) => {
                 let generics = db.generic_params(it.id.into());
+
+                // Ignore enums with const generics
+                if generics
+                    .type_or_consts
+                    .values()
+                    .any(|it| matches!(it, TypeOrConstParamData::ConstParamData(_)))
+                {
+                    return None;
+                }
+
+                // We currently do not check lifetime bounds so ignore all types that have something to do
+                // with them
+                if !generics.lifetimes.is_empty() {
+                    return None;
+                }
+
                 let generic_params = lookup
                     .iter_types()
                     .collect::<Vec<_>>() // Force take ownership
@@ -255,7 +287,8 @@ pub(super) fn free_function<'a>(
                 }
 
                 // Ignore all the generics for now as they kill the performance
-                if generics.type_or_consts.len() > 0 {
+                // Ignore lifetimes as we do not check them
+                if !generics.type_or_consts.is_empty() || !generics.lifetimes.is_empty() {
                     return None;
                 }
 
@@ -364,6 +397,11 @@ pub(super) fn impl_method<'a>(
                     .values()
                     .any(|it| matches!(it, TypeOrConstParamData::ConstParamData(_)))
             {
+                return None;
+            }
+
+            // Ignore all functions that have something to do with lifetimes as we don't check them
+            if !fn_generics.lifetimes.is_empty() {
                 return None;
             }
 
