@@ -39,6 +39,9 @@ pub(super) fn trivial<'a>(
                 let invalid = borrowck.iter().any(|b| {
                     b.partially_moved.iter().any(|moved| {
                         Some(&moved.local) == b.mir_body.binding_locals.get(it.binding_id)
+                    }) || b.borrow_regions.iter().any(|region| {
+                        // TODO: Unique vs shared borrows
+                        Some(&region.local) == b.mir_body.binding_locals.get(it.binding_id)
                     })
                 });
 

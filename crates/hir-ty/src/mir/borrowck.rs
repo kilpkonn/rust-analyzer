@@ -7,6 +7,7 @@ use std::iter;
 
 use hir_def::{DefWithBodyId, HasModule};
 use la_arena::ArenaMap;
+use rustc_hash::FxHashMap;
 use stdx::never;
 use triomphe::Arc;
 
@@ -41,11 +42,19 @@ pub struct PartiallyMoved {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BorrowRegion {
+    pub local: LocalId,
+    pub kind: BorrowKind,
+    pub places: Vec<MirSpan>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BorrowckResult {
     pub mir_body: Arc<MirBody>,
     pub mutability_of_locals: ArenaMap<LocalId, MutabilityReason>,
     pub moved_out_of_ref: Vec<MovedOutOfRef>,
     pub partially_moved: Vec<PartiallyMoved>,
+    pub borrow_regions: Vec<BorrowRegion>,
 }
 
 fn all_mir_bodies(
@@ -86,6 +95,7 @@ pub fn borrowck_query(
             mutability_of_locals: mutability_of_locals(db, &body),
             moved_out_of_ref: moved_out_of_ref(db, &body),
             partially_moved: partially_moved(db, &body),
+            borrow_regions: borrow_regions(db, &body),
             mir_body: body,
         });
     })?;
@@ -221,7 +231,7 @@ fn partially_moved(db: &dyn HirDatabase, body: &MirBody) -> Vec<PartiallyMoved> 
             if !ty.clone().is_copy(db, body.owner)
                 && !ty.data(Interner).flags.intersects(TypeFlags::HAS_ERROR)
             {
-                result.push(PartiallyMoved { local: p.local, span, ty });
+                result.push(PartiallyMoved { span, ty, local: p.local });
             }
         }
         Operand::Constant(_) | Operand::Static(_) => (),
@@ -289,6 +299,52 @@ fn partially_moved(db: &dyn HirDatabase, body: &MirBody) -> Vec<PartiallyMoved> 
     }
     result.shrink_to_fit();
     result
+}
+
+fn borrow_regions(db: &dyn HirDatabase, body: &MirBody) -> Vec<BorrowRegion> {
+    let mut borrows = FxHashMap::default();
+    for (_, block) in body.basic_blocks.iter() {
+        db.unwind_if_cancelled();
+        for statement in &block.statements {
+            match &statement.kind {
+                StatementKind::Assign(_, r) => match r {
+                    Rvalue::Ref(kind, p) => {
+                        borrows
+                            .entry(p.local)
+                            .and_modify(|it: &mut BorrowRegion| {
+                                it.places.push(statement.span);
+                            })
+                            .or_insert_with(|| BorrowRegion {
+                                local: p.local,
+                                kind: *kind,
+                                places: vec![statement.span],
+                            });
+                    }
+                    _ => (),
+                },
+                _ => (),
+            }
+        }
+        match &block.terminator {
+            Some(terminator) => match &terminator.kind {
+                TerminatorKind::FalseEdge { .. }
+                | TerminatorKind::FalseUnwind { .. }
+                | TerminatorKind::Goto { .. }
+                | TerminatorKind::UnwindResume
+                | TerminatorKind::GeneratorDrop
+                | TerminatorKind::Abort
+                | TerminatorKind::Return
+                | TerminatorKind::Unreachable
+                | TerminatorKind::Drop { .. } => (),
+                TerminatorKind::DropAndReplace { .. } => {}
+                TerminatorKind::Call { .. } => {}
+                _ => (),
+            },
+            None => (),
+        }
+    }
+
+    borrows.into_values().collect()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

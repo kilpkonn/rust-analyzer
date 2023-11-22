@@ -444,8 +444,8 @@ impl flags::AnalysisStats {
                                     err_idx += 7;
                                     let err_code = &err[err_idx..err_idx + 4];
                                     // if err_code == "0308" {
-                                        println!("{}", err);
-                                        println!("{}", generated);
+                                    println!("{}", err);
+                                    println!("{}", generated);
                                     // }
                                     acc.error_codes
                                         .entry(err_code.to_owned())
