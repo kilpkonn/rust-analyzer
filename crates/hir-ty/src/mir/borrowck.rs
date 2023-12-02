@@ -3,11 +3,11 @@
 // Currently it is an ad-hoc implementation, only useful for mutability analysis. Feel free to remove all of these
 // if needed for implementing a proper borrow checker.
 
-use std::iter;
+use std::{collections::VecDeque, iter};
 
 use hir_def::{DefWithBodyId, HasModule};
 use la_arena::ArenaMap;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use stdx::never;
 use triomphe::Arc;
 
@@ -16,8 +16,8 @@ use crate::{
 };
 
 use super::{
-    BasicBlockId, BorrowKind, LocalId, MirBody, MirLowerError, MirSpan, Place, ProjectionElem,
-    Rvalue, StatementKind, TerminatorKind,
+    BasicBlockId, BorrowKind, Local, LocalId, MirBody, MirLowerError, MirSpan, Place,
+    ProjectionElem, Rvalue, StatementKind, TerminatorKind,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,19 +42,11 @@ pub struct PartiallyMoved {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BorrowRegion {
-    pub local: LocalId,
-    pub kind: BorrowKind,
-    pub places: Vec<MirSpan>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BorrowckResult {
     pub mir_body: Arc<MirBody>,
     pub mutability_of_locals: ArenaMap<LocalId, MutabilityReason>,
     pub moved_out_of_ref: Vec<MovedOutOfRef>,
     pub partially_moved: Vec<PartiallyMoved>,
-    pub borrow_regions: Vec<BorrowRegion>,
 }
 
 fn all_mir_bodies(
@@ -95,7 +87,6 @@ pub fn borrowck_query(
             mutability_of_locals: mutability_of_locals(db, &body),
             moved_out_of_ref: moved_out_of_ref(db, &body),
             partially_moved: partially_moved(db, &body),
-            borrow_regions: borrow_regions(db, &body),
             mir_body: body,
         });
     })?;
@@ -301,50 +292,160 @@ fn partially_moved(db: &dyn HirDatabase, body: &MirBody) -> Vec<PartiallyMoved> 
     result
 }
 
-fn borrow_regions(db: &dyn HirDatabase, body: &MirBody) -> Vec<BorrowRegion> {
-    let mut borrows = FxHashMap::default();
-    for (_, block) in body.basic_blocks.iter() {
-        db.unwind_if_cancelled();
+#[derive(Debug, Copy, Clone)]
+pub enum Borrow {
+    Unique,
+    Shared(u32),
+}
+
+impl Borrow {
+    pub fn dec_count(self) -> Option<Self> {
+        match self {
+            Borrow::Unique => None,
+            Borrow::Shared(0) => None,
+            Borrow::Shared(n) => Some(Borrow::Shared(n.saturating_sub(1))),
+        }
+    }
+
+    pub fn inc_count(self) -> Self {
+        match self {
+            Borrow::Unique => Borrow::Unique,
+            Borrow::Shared(n) => Borrow::Shared(n.saturating_add(1)),
+        }
+    }
+}
+
+fn merge_block_borrows(base: &mut FxHashMap<LocalId, Borrow>, new: FxHashMap<LocalId, Borrow>) {
+    for (key, val) in new {
+        base.entry(key).and_modify(|it| {
+            match (&it, val) {
+                (Borrow::Unique, Borrow::Unique) => (),    // Invalid code
+                (Borrow::Unique, Borrow::Shared(_)) => (), // Invalid code
+                (Borrow::Shared(_), Borrow::Unique) => *it = Borrow::Unique, // Invalid code
+                (Borrow::Shared(n), Borrow::Shared(m)) => *it = Borrow::Shared(n + m),
+            }
+        });
+    }
+}
+
+pub fn borrow_kind_in_region(
+    db: &dyn HirDatabase,
+    body: &MirBody,
+    span: &MirSpan,
+    local: &Local,
+) -> Option<BorrowKind> {
+    let mut block_queue = VecDeque::new();
+    block_queue.push_back(body.start_block);
+    let mut propagated_borrows: FxHashMap<BasicBlockId, FxHashMap<LocalId, Borrow>> =
+        FxHashMap::default();
+    let mut visited = FxHashSet::default();
+
+    loop {
+        let current_block = body.start_block;
+        if visited.contains(&current_block) {
+            continue;
+        }
+        visited.insert(current_block);
+        let block = &body.basic_blocks[current_block];
+        let block_borrows = propagated_borrows.entry(current_block).or_default();
+
         for statement in &block.statements {
             match &statement.kind {
-                StatementKind::Assign(_, r) => match r {
-                    Rvalue::Ref(kind, p) => {
-                        borrows
-                            .entry(p.local)
-                            .and_modify(|it: &mut BorrowRegion| {
-                                it.places.push(statement.span);
-                            })
-                            .or_insert_with(|| BorrowRegion {
-                                local: p.local,
-                                kind: *kind,
-                                places: vec![statement.span],
-                            });
+                StatementKind::Assign(p_old, r) => {
+                    if let Some(it) = block_borrows.get_mut(&p_old.local) {
+                        // Decrease active borrows count
+                        match it.dec_count() {
+                            Some(b) => *it = b,
+                            None => {
+                                block_borrows.remove(&p_old.local);
+                            }
+                        };
                     }
-                    _ => (),
-                },
+                    match r {
+                        Rvalue::Ref(kind, p_new) => {
+                            block_borrows
+                                .entry(p_new.local)
+                                .and_modify(|it| *it = it.inc_count())
+                                .or_insert_with(|| match kind {
+                                    BorrowKind::Shared => Borrow::Shared(1),
+                                    BorrowKind::Shallow => Borrow::Unique,
+                                    BorrowKind::Unique => Borrow::Unique,
+                                    BorrowKind::Mut { .. } => Borrow::Unique,
+                                });
+                        }
+                        _ => (),
+                    }
+                }
                 _ => (),
             }
         }
+        let mut block_borrows = block_borrows.clone();
         match &block.terminator {
             Some(terminator) => match &terminator.kind {
-                TerminatorKind::FalseEdge { .. }
-                | TerminatorKind::FalseUnwind { .. }
-                | TerminatorKind::Goto { .. }
-                | TerminatorKind::UnwindResume
-                | TerminatorKind::GeneratorDrop
-                | TerminatorKind::Abort
-                | TerminatorKind::Return
-                | TerminatorKind::Unreachable
-                | TerminatorKind::Drop { .. } => (),
-                TerminatorKind::DropAndReplace { .. } => {}
-                TerminatorKind::Call { .. } => {}
+                TerminatorKind::FalseEdge { real_target, imaginary_target } => {
+                    propagated_borrows
+                        .entry(*real_target)
+                        .and_modify(|it| {
+                            merge_block_borrows(it, block_borrows.clone());
+                        })
+                        .or_insert_with(|| block_borrows.clone());
+                    propagated_borrows
+                        .entry(*imaginary_target)
+                        .and_modify(|it| {
+                            merge_block_borrows(it, block_borrows.clone());
+                        })
+                        .or_insert_with(|| block_borrows);
+                    // Push back might not be safe, maybe need it somewhere faster
+                    block_queue.push_back(*real_target);
+                    block_queue.push_back(*imaginary_target);
+                }
+                TerminatorKind::Goto { target } => {
+                    propagated_borrows
+                        .entry(*target)
+                        .and_modify(|it| {
+                            merge_block_borrows(it, block_borrows.clone());
+                        })
+                        .or_insert_with(|| block_borrows);
+                    // Push back might not be safe, maybe need it somewhere faster
+                    block_queue.push_back(*target);
+                }
+                TerminatorKind::Drop { place, target, .. }
+                | TerminatorKind::DropAndReplace { place, target, .. }
+                | TerminatorKind::Call { destination: place, target: Some(target), .. } => {
+                    if let Some(it) = block_borrows.remove(&place.local).and_then(|v| v.dec_count())
+                    {
+                        block_borrows.insert(place.local, it);
+                    }
+                    propagated_borrows
+                        .entry(*target)
+                        .and_modify(|it| {
+                            merge_block_borrows(it, block_borrows.clone());
+                        })
+                        .or_insert_with(|| block_borrows);
+                    // Push back might not be safe, maybe need it somewhere faster
+                    block_queue.push_back(*target);
+                }
+                TerminatorKind::SwitchInt { targets, .. } => {
+                    for target in targets.all_targets() {
+                        propagated_borrows
+                            .entry(*target)
+                            .and_modify(|it| {
+                                merge_block_borrows(it, block_borrows.clone());
+                            })
+                            .or_insert_with(|| block_borrows.clone());
+                        // Push back might not be safe, maybe need it somewhere faster
+                        block_queue.push_back(*target);
+                        // TODO: Should somehow find when do the branches merge again
+                    }
+                }
                 _ => (),
             },
             None => (),
         }
+        break;
     }
 
-    borrows.into_values().collect()
+    None
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
