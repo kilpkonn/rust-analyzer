@@ -209,6 +209,7 @@ mod handlers {
     mod unmerge_match_arm;
     mod unwrap_tuple;
     mod sort_items;
+    mod term_search;
     mod toggle_ignore;
     mod unmerge_use;
     mod unnecessary_async;
@@ -328,6 +329,7 @@ mod handlers {
             replace_arith_op::replace_arith_with_saturating,
             sort_items::sort_items,
             split_import::split_import,
+            term_search::term_search,
             toggle_ignore::toggle_ignore,
             unmerge_match_arm::unmerge_match_arm,
             unmerge_use::unmerge_use,
