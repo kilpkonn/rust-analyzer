@@ -1,6 +1,7 @@
 //! Type tree for term search
 
 use hir_def::find_path::PrefixKind;
+use hir_expand::mod_path::ModPath;
 use hir_ty::{db::HirDatabase, display::HirDisplay};
 use itertools::Itertools;
 
@@ -10,7 +11,8 @@ use crate::{
 };
 
 /// Helper function to prefix items with modules when required
-fn mod_item_path(db: &dyn HirDatabase, sema_scope: &SemanticsScope<'_>, def: &ModuleDef) -> String {
+fn mod_item_path(sema_scope: &SemanticsScope<'_>, def: &ModuleDef) -> Option<ModPath> {
+    let db = sema_scope.db;
     // Account for locals shadowing items from module
     let name_hit_count = def.name(db).map(|def_name| {
         let mut name_hit_count = 0;
@@ -23,12 +25,34 @@ fn mod_item_path(db: &dyn HirDatabase, sema_scope: &SemanticsScope<'_>, def: &Mo
     });
 
     let m = sema_scope.module();
-    let path = match name_hit_count {
+    match name_hit_count {
         Some(0..=1) | None => m.find_use_path(db.upcast(), *def, false, true),
         Some(_) => m.find_use_path_prefixed(db.upcast(), *def, PrefixKind::ByCrate, false, true),
-    };
+    }
+}
 
-    path.map(|it| it.display(db.upcast()).to_string()).expect("use path error")
+fn mod_item_path_str(sema_scope: &SemanticsScope<'_>, def: &ModuleDef) -> String {
+    let path = mod_item_path(sema_scope, def);
+    path.map(|it| it.display(sema_scope.db.upcast()).to_string()).expect("Invalid item path")
+}
+
+fn type_path(sema_scope: &SemanticsScope<'_>, ty: &Type) -> String {
+    let db = sema_scope.db;
+    match ty.as_adt() {
+        Some(adt) => {
+            let ty_name = ty.display(db).to_string();
+
+            let mut path =
+                mod_item_path(sema_scope, &ModuleDef::Adt(adt)).expect("Invalid item path");
+            path.pop_segment();
+            let path = path.display(db.upcast()).to_string();
+            match path.is_empty() {
+                true => ty_name,
+                false => format!("{path}::{ty_name}"),
+            }
+        }
+        None => ty.display(db).to_string(),
+    }
 }
 
 /// Type tree shows how can we get from set of types to some type.
@@ -85,8 +109,8 @@ impl TypeTree {
     pub fn gen_source_code(&self, sema_scope: &SemanticsScope<'_>) -> String {
         let db = sema_scope.db;
         match self {
-            TypeTree::Const(it) => mod_item_path(db, sema_scope, &ModuleDef::Const(*it)),
-            TypeTree::Static(it) => mod_item_path(db, sema_scope, &ModuleDef::Static(*it)),
+            TypeTree::Const(it) => mod_item_path_str(sema_scope, &ModuleDef::Const(*it)),
+            TypeTree::Static(it) => mod_item_path_str(sema_scope, &ModuleDef::Static(*it)),
             TypeTree::Local(it) => return it.name(db).display(db.upcast()).to_string(),
             TypeTree::ConstParam(it) => return it.name(db).display(db.upcast()).to_string(),
             TypeTree::FamousType { value, .. } => return value.to_string(),
@@ -100,7 +124,7 @@ impl TypeTree {
                     match func.as_assoc_item(db).unwrap().containing_trait_or_trait_impl(db) {
                         Some(trait_) => {
                             let trait_name =
-                                mod_item_path(db, sema_scope, &ModuleDef::Trait(trait_));
+                                mod_item_path_str(sema_scope, &ModuleDef::Trait(trait_));
                             let target = match self_param.access(db) {
                                 crate::Access::Shared => format!("&{target}"),
                                 crate::Access::Exclusive => format!("&mut {target}"),
@@ -116,15 +140,46 @@ impl TypeTree {
                 } else {
                     let args = params.iter().map(|f| f.gen_source_code(sema_scope)).join(", ");
 
-                    let fn_name = mod_item_path(db, sema_scope, &ModuleDef::Function(*func));
-                    format!("{fn_name}({args})",)
+                    match func.as_assoc_item(db).map(|it| it.container(db)) {
+                        Some(container) => {
+                            let container_name = match container {
+                                crate::AssocItemContainer::Trait(trait_) => {
+                                    mod_item_path_str(sema_scope, &ModuleDef::Trait(trait_))
+                                }
+                                crate::AssocItemContainer::Impl(imp) => {
+                                    let self_ty = imp.self_ty(db);
+                                    match self_ty.as_adt() {
+                                        Some(adt) => {
+                                            mod_item_path_str(sema_scope, &ModuleDef::Adt(adt))
+                                        }
+                                        None => self_ty.display(db).to_string(),
+                                    }
+                                }
+                            };
+                            let fn_name = func.name(db).display(db.upcast()).to_string();
+                            format!("{container_name}::{fn_name}({args})",)
+                        }
+                        None => {
+                            let fn_name =
+                                mod_item_path_str(sema_scope, &ModuleDef::Function(*func));
+                            format!("{fn_name}({args})",)
+                        }
+                    }
                 }
             }
             TypeTree::Variant { variant, generics, params } => {
+                let generics_str = match generics.is_empty() {
+                    true => String::new(),
+                    false => {
+                        let generics =
+                            generics.iter().map(|it| type_path(sema_scope, it)).join(", ");
+                        format!("::<{generics}>")
+                    }
+                };
                 let inner = match variant.kind(db) {
                     StructKind::Tuple => {
                         let args = params.iter().map(|f| f.gen_source_code(sema_scope)).join(", ");
-                        format!("({args})")
+                        format!("{generics_str}({args})")
                     }
                     StructKind::Record => {
                         let fields = variant.fields(db);
@@ -139,18 +194,12 @@ impl TypeTree {
                                 )
                             })
                             .join(", ");
-                        format!("{{ {args} }}")
+                        format!("{generics_str}{{ {args} }}")
                     }
-                    StructKind::Unit => match generics.is_empty() {
-                        true => String::new(),
-                        false => {
-                            let generics = generics.iter().map(|it| it.display(db)).join(", ");
-                            format!("::<{generics}>")
-                        }
-                    },
+                    StructKind::Unit => generics_str,
                 };
 
-                let prefix = mod_item_path(db, sema_scope, &ModuleDef::Variant(*variant));
+                let prefix = mod_item_path_str(sema_scope, &ModuleDef::Variant(*variant));
                 format!("{prefix}{inner}")
             }
             TypeTree::Struct { strukt, generics, params } => {
@@ -177,13 +226,14 @@ impl TypeTree {
                     StructKind::Unit => match generics.is_empty() {
                         true => String::new(),
                         false => {
-                            let generics = generics.iter().map(|it| it.display(db)).join(", ");
+                            let generics =
+                                generics.iter().map(|it| type_path(sema_scope, it)).join(", ");
                             format!("::<{generics}>")
                         }
                     },
                 };
 
-                let prefix = mod_item_path(db, sema_scope, &ModuleDef::Adt(Adt::Struct(*strukt)));
+                let prefix = mod_item_path_str(sema_scope, &ModuleDef::Adt(Adt::Struct(*strukt)));
                 format!("{prefix}{inner}")
             }
             TypeTree::Field { type_tree, field } => {
