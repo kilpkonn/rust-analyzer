@@ -178,8 +178,14 @@ impl TypeTree {
                 };
                 let inner = match variant.kind(db) {
                     StructKind::Tuple => {
+                        let name = variant
+                            .parent_enum(db)
+                            .ty_with_generics(db, generics.iter().cloned())
+                            .display_source_code(db, sema_scope.module().id, true)
+                            .unwrap()
+                            .to_string();
                         let args = params.iter().map(|f| f.gen_source_code(sema_scope)).join(", ");
-                        format!("{generics_str}({args})")
+                        return format!("{name}({args})");
                     }
                     StructKind::Record => {
                         let fields = variant.fields(db);

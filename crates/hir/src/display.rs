@@ -17,10 +17,10 @@ use hir_ty::{
 };
 
 use crate::{
-    Adt, AsAssocItem, AssocItemContainer, Const, ConstParam, Enum, ExternCrateDecl, Field,
-    Function, GenericParam, HasCrate, HasVisibility, LifetimeParam, Macro, Module, SelfParam,
-    Static, Struct, Trait, TraitAlias, TyBuilder, Type, TypeAlias, TypeOrConstParam, TypeParam,
-    Union, Variant,
+    term_search::TypeTree, Adt, AsAssocItem, AssocItemContainer, Const, ConstParam, Enum,
+    ExternCrateDecl, Field, Function, GenericParam, HasCrate, HasVisibility, LifetimeParam, Macro,
+    Module, SelfParam, Static, Struct, Trait, TraitAlias, TyBuilder, Type, TypeAlias,
+    TypeOrConstParam, TypeParam, Union, Variant,
 };
 
 impl HirDisplay for Function {
@@ -648,5 +648,141 @@ impl HirDisplay for Macro {
             hir_def::MacroId::ProcMacroId(_) => f.write_str("proc_macro"),
         }?;
         write!(f, " {}", self.name(f.db).display(f.db.upcast()))
+    }
+}
+
+impl HirDisplay for TypeTree {
+    fn hir_fmt(&self, f: &mut HirFormatter<'_>) -> Result<(), HirDisplayError> {
+        match self {
+            TypeTree::Const(c) => c.hir_fmt(f),
+            TypeTree::Static(s) => s.hir_fmt(f),
+            TypeTree::Local(local) => write!(f, "{}", local.name(f.db).display(f.db.upcast())),
+            TypeTree::ConstParam(cp) => cp.hir_fmt(f),
+            TypeTree::FamousType { value, .. } => write!(f, "{value}"),
+            TypeTree::Function { func, params, .. } => {
+                if let Some(self_param) = func.self_param(f.db) {
+                    let target = params.first().expect("no self param");
+                    let args = params.iter().skip(1);
+                    match func.as_assoc_item(f.db).unwrap().containing_trait_or_trait_impl(f.db) {
+                        Some(trait_) => {
+                            trait_.hir_fmt(f)?;
+                            write!(f, "::{}(", func.name(f.db).display(f.db.upcast()))?;
+
+                            // params
+                            match self_param.access(f.db) {
+                                crate::Access::Shared => f.write_str("&")?,
+                                crate::Access::Exclusive => f.write_str("&mut")?,
+                                crate::Access::Owned => (),
+                            };
+                            target.hir_fmt(f)?;
+
+                            for arg in args {
+                                f.write_str(", ")?;
+                                arg.hir_fmt(f)?;
+                            }
+                            f.write_str(")")?;
+                            Ok(())
+                        }
+                        None => {
+                            target.hir_fmt(f)?;
+                            write!(f, ".{}(", func.name(f.db).display(f.db.upcast()))?;
+                            for arg in args {
+                                f.write_str(", ")?;
+                                arg.hir_fmt(f)?;
+                            }
+                            f.write_str(")")?;
+                            Ok(())
+                        }
+                    }
+                } else {
+                    match func.as_assoc_item(f.db).map(|it| it.container(f.db)) {
+                        Some(container) => {
+                            match container {
+                                crate::AssocItemContainer::Trait(trait_) => {
+                                    write!(f, "{}", trait_.name(f.db).display(f.db.upcast()))?
+                                }
+                                crate::AssocItemContainer::Impl(imp) => {
+                                    let self_ty = imp.self_ty(f.db);
+                                    match self_ty.as_adt() {
+                                        Some(adt) => {
+                                            write!(f, "{}", adt.name(f.db).display(f.db.upcast()))?
+                                        }
+                                        None => self_ty.hir_fmt(f)?,
+                                    }
+                                }
+                            };
+
+                            f.write_str("::")?;
+                        }
+                        None => (),
+                    };
+                    write!(f, "{}(", func.name(f.db).display(f.db.upcast()))?;
+                    for param in params {
+                        f.write_str(", ")?;
+                        param.hir_fmt(f)?;
+                    }
+                    f.write_str(")")?;
+                    Ok(())
+                }
+            }
+            TypeTree::Variant { variant, generics, params } => {
+                let enum_ty =
+                    variant.parent_enum(f.db).ty_with_generics(f.db, generics.iter().cloned());
+                match variant.kind(f.db) {
+                    StructKind::Tuple => {
+                        enum_ty.hir_fmt(f)?;
+                        f.write_str("(")?;
+                        for param in params {
+                            f.write_str(", ")?;
+                            param.hir_fmt(f)?;
+                        }
+                        f.write_str(")")?;
+                    }
+                    StructKind::Record => {
+                        let fields = variant.fields(f.db);
+                        enum_ty.hir_fmt(f)?;
+                        f.write_str("{")?;
+                        for (param, field) in params.iter().zip(fields.iter()) {
+                            write!(f, ", {}: ", field.name(f.db).display(f.db.upcast()))?;
+                            param.hir_fmt(f)?;
+                        }
+                        f.write_str("}")?;
+                    }
+                    StructKind::Unit => {
+                        enum_ty.hir_fmt(f)?;
+                    }
+                };
+                Ok(())
+            }
+            TypeTree::Struct { strukt, generics, params } => todo!(),
+            TypeTree::Field { type_tree, field } => {
+                type_tree.hir_fmt(f)?;
+                write!(f, ".{}", field.name(f.db).display(f.db.upcast()))
+            }
+            TypeTree::Reference(inner) => {
+                f.write_str("&")?;
+                inner.hir_fmt(f)
+            }
+        }
+    }
+}
+
+/// Helper function to prefix items with modules when required
+fn display_mod_def_path(f: &mut HirFormatter<'_>, def: &ModuleDef) -> Option<ModPath> {
+    // Account for locals shadowing items from module
+    let name_hit_count = def.name(f.db).map(|def_name| {
+        let mut name_hit_count = 0;
+        sema_scope.process_all_names(&mut |name, _| {
+            if name == def_name {
+                name_hit_count += 1;
+            }
+        });
+        name_hit_count
+    });
+
+    let m = sema_scope.module();
+    match name_hit_count {
+        Some(0..=1) | None => m.find_use_path(db.upcast(), *def, false, true),
+        Some(_) => m.find_use_path_prefixed(db.upcast(), *def, PrefixKind::ByCrate, false, true),
     }
 }

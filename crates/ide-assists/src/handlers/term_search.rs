@@ -122,6 +122,29 @@ mod tests {
     }
 
     #[test]
+    fn test_enum_with_generics4() {
+        check_assist(
+            term_search,
+            r#"macro_rules! todo { () => (_) };
+            enum Foo<T = i32> { Foo(T) }
+            fn f() { let a = 0; let b: Foo = todo$0!(); }"#,
+            r#"macro_rules! todo { () => (_) };
+            enum Foo<T = i32> { Foo(T) }
+            fn f() { let a = 0; let b: Foo = Foo::Foo(a); }"#,
+        );
+
+        check_assist(
+            term_search,
+            r#"macro_rules! todo { () => (_) };
+            enum Foo<T = i32> { Foo(T) }
+            fn f() { let a: u32 = 0; let b: Foo = todo$0!(); }"#,
+            r#"macro_rules! todo { () => (_) };
+            enum Foo<T = i32> { Foo(T) }
+            fn f() { let a: u32 = 0; let b: Foo = Foo::Foo::<u32>(a); }"#,
+        )
+    }
+
+    #[test]
     fn test_newtype() {
         check_assist(
             term_search,

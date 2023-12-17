@@ -1262,7 +1262,7 @@ fn hir_fmt_generics(
                         if parameter.ty(Interner).map(|it| it.kind(Interner))
                             == Some(&TyKind::Error)
                         {
-                            return true;
+                            return false;
                         }
                         if let Some(ConstValue::Concrete(c)) =
                             parameter.constant(Interner).map(|it| &it.data(Interner).value)
