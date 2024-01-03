@@ -1228,6 +1228,10 @@ fn here_we_go() {
 "#,
         expect![[r#"
             st Bar (alias Qux) Bar
+            sn ()
+            sn false
+            sn here_we_go()
+            sn true
         "#]],
     );
 }
@@ -1282,6 +1286,10 @@ fn here_we_go() {
             kw unsafe
             kw while
             kw while let
+            sn ()
+            sn false
+            sn here_we_go()
+            sn true
         "#]],
     );
 }
