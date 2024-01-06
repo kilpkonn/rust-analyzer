@@ -160,7 +160,7 @@ pub(super) fn type_constructor<'a, DB: HirDatabase>(
                     })
                     .collect();
 
-                let enum_ty = parent_enum.ty_with_generics(db, generics.iter().cloned());
+                let enum_ty = parent_enum.ty_with_args(db, generics.iter().cloned());
 
                 // Allow types with generics only if they take us straight to goal for
                 // performance reasons
@@ -177,9 +177,7 @@ pub(super) fn type_constructor<'a, DB: HirDatabase>(
                 let param_trees: Vec<Vec<TypeTree>> = variant
                     .fields(db)
                     .into_iter()
-                    .map(|field| {
-                        lookup.find(db, &field.ty_with_generics(db, generics.iter().cloned()))
-                    })
+                    .map(|field| lookup.find(db, &field.ty_with_args(db, generics.iter().cloned())))
                     .collect::<Option<_>>()?;
 
                 // Note that we need special case for 0 param constructors because of multi cartesian
@@ -280,7 +278,7 @@ pub(super) fn type_constructor<'a, DB: HirDatabase>(
                                 None => g.next().expect("Missing type param"),
                             })
                             .collect();
-                        let struct_ty = it.ty_with_generics(db, generics.iter().cloned());
+                        let struct_ty = it.ty_with_args(db, generics.iter().cloned());
 
                         // Allow types with generics only if they take us straight to goal for
                         // performance reasons
@@ -578,7 +576,7 @@ pub(super) fn impl_method<'a, DB: HirDatabase>(
                     let self_ty = it
                         .self_param(db)
                         .expect("No self param")
-                        .ty_with_generics(db, ty.type_arguments().chain(generics.iter().cloned()));
+                        .ty_with_args(db, ty.type_arguments().chain(generics.iter().cloned()));
 
                     // Ignore functions that have different self type
                     if !self_ty.autoderef(db).any(|s_ty| ty == s_ty) {
@@ -600,7 +598,16 @@ pub(super) fn impl_method<'a, DB: HirDatabase>(
                     let fn_trees: Vec<TypeTree> = std::iter::once(target_type_trees)
                         .chain(param_trees.into_iter())
                         .multi_cartesian_product()
-                        .map(|params| TypeTree::Function { func: it, generics: Vec::new(), params })
+                        .map(|params| {
+                            let mut params = params.into_iter();
+                            let target = Box::new(params.next().unwrap());
+                            TypeTree::Method {
+                                func: it,
+                                generics: generics.clone(),
+                                target,
+                                params: params.collect(),
+                            }
+                        })
                         .collect();
 
                     lookup.insert(ret_ty.clone(), fn_trees.iter().cloned());
@@ -821,7 +828,6 @@ pub(super) fn impl_static_method<'a, DB: HirDatabase>(
                             .map(|params| TypeTree::Function {
                                 func: it,
                                 generics: generics.clone(),
-
                                 params,
                             })
                             .collect()

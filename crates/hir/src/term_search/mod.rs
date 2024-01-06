@@ -19,48 +19,61 @@ enum NewTypesKey {
     StructProjection,
 }
 
+/// Helper enum to squash big number of alternative trees into `Many` variant as there is too many
+/// to take into account.
 #[derive(Debug)]
 enum AlternativeTrees {
+    /// There are few trees, so we keep track of them all
     Few(FxHashSet<TypeTree>),
-    Many(Type),
+    /// There are too many trees to keep track of
+    Many,
 }
 
 impl AlternativeTrees {
-    pub fn new(
-        threshold: usize,
-        ty: Type,
-        trees: impl Iterator<Item = TypeTree>,
-    ) -> AlternativeTrees {
+    /// Construct alternative trees
+    ///
+    /// # Arguments
+    /// `threshold` - threshold value for many trees (more than that is many)
+    /// `trees` - trees iterator
+    fn new(threshold: usize, trees: impl Iterator<Item = TypeTree>) -> AlternativeTrees {
         let mut it = AlternativeTrees::Few(Default::default());
-        it.extend_with_threshold(threshold, ty, trees);
+        it.extend_with_threshold(threshold, trees);
         it
     }
 
-    pub fn trees(&self) -> Vec<TypeTree> {
+    /// Get type trees stored in alternative trees (or `TypeTree::Many` in case of many)
+    ///
+    /// # Arguments
+    /// `ty` - Type of trees queried (this is used to give type to `TypeTree::Many`)
+    fn trees(&self, ty: &Type) -> Vec<TypeTree> {
         match self {
             AlternativeTrees::Few(trees) => trees.iter().cloned().collect(),
-            AlternativeTrees::Many(ty) => vec![TypeTree::Many(ty.clone())],
+            AlternativeTrees::Many => vec![TypeTree::Many(ty.clone())],
         }
     }
 
-    pub fn extend_with_threshold(
+    /// Extend alternative trees
+    ///
+    /// # Arguments
+    /// `threshold` - threshold value for many trees (more than that is many)
+    /// `trees` - trees iterator
+    fn extend_with_threshold(
         &mut self,
         threshold: usize,
-        ty: Type,
         mut trees: impl Iterator<Item = TypeTree>,
     ) {
         match self {
             AlternativeTrees::Few(tts) => {
                 while let Some(it) = trees.next() {
                     if tts.len() > threshold {
-                        *self = AlternativeTrees::Many(ty);
+                        *self = AlternativeTrees::Many;
                         break;
                     }
 
                     tts.insert(it);
                 }
             }
-            AlternativeTrees::Many(_) => (),
+            AlternativeTrees::Many => (),
         }
     }
 }
@@ -106,7 +119,7 @@ impl LookupTable {
         self.data
             .iter()
             .find(|(t, _)| t.could_unify_with_deeply(db, ty))
-            .map(|(_, tts)| tts.trees())
+            .map(|(t, tts)| tts.trees(t))
     }
 
     /// Same as find but automatically creates shared reference of types in the lookup
@@ -117,15 +130,15 @@ impl LookupTable {
         self.data
             .iter()
             .find(|(t, _)| t.could_unify_with_deeply(db, ty))
-            .map(|(_, tts)| tts.trees())
+            .map(|(t, tts)| tts.trees(t))
             .or_else(|| {
                 self.data
                     .iter()
                     .find(|(t, _)| {
                         Type::reference(t, Mutability::Shared).could_unify_with_deeply(db, &ty)
                     })
-                    .map(|(_, tts)| {
-                        tts.trees()
+                    .map(|(t, tts)| {
+                        tts.trees(t)
                             .into_iter()
                             .map(|tt| TypeTree::Reference(Box::new(tt)))
                             .collect()
@@ -140,12 +153,9 @@ impl LookupTable {
     /// but they clearly do not unify themselves.
     fn insert(&mut self, ty: Type, trees: impl Iterator<Item = TypeTree>) {
         match self.data.get_mut(&ty) {
-            Some(it) => it.extend_with_threshold(self.many_threshold, ty, trees),
+            Some(it) => it.extend_with_threshold(self.many_threshold, trees),
             None => {
-                self.data.insert(
-                    ty.clone(),
-                    AlternativeTrees::new(self.many_threshold, ty.clone(), trees),
-                );
+                self.data.insert(ty.clone(), AlternativeTrees::new(self.many_threshold, trees));
                 for it in self.new_types.values_mut() {
                     it.push(ty.clone());
                 }
@@ -206,6 +216,7 @@ impl LookupTable {
 }
 
 /// Context for the `term_search` function
+#[derive(Debug)]
 pub struct TermSearchCtx<'a, DB: HirDatabase> {
     /// Semantics for the program
     pub sema: &'a Semantics<'a, DB>,
@@ -230,7 +241,7 @@ pub struct TermSearchConfig {
 
 impl Default for TermSearchConfig {
     fn default() -> Self {
-        Self { enable_borrowcheck: true, many_alternatives_threshold: 1, depth: 5 }
+        Self { enable_borrowcheck: true, many_alternatives_threshold: 1, depth: 6 }
     }
 }
 
@@ -239,9 +250,7 @@ impl Default for TermSearchConfig {
 /// Search for terms (expressions) that unify with the `goal` type.
 ///
 /// # Arguments
-/// * `sema` - Semantics for the program
-/// * `scope` - Semantic scope, captures context for the term search
-/// * `goal` - Target / expected output type
+/// * `ctx` - Context for term search
 ///
 /// Internally this function uses Breadth First Search to find path to `goal` type.
 /// The general idea is following:
@@ -258,7 +267,7 @@ impl Default for TermSearchConfig {
 /// Note that there are usually more ways we can get to the `goal` type but some are discarded to
 /// reduce the memory consumption. It is also unlikely anyone is willing ti browse through
 /// thousands of possible responses so we currently take first 10 from every tactic.
-pub fn term_search<DB: HirDatabase>(ctx: TermSearchCtx<'_, DB>) -> Vec<TypeTree> {
+pub fn term_search<DB: HirDatabase>(ctx: &TermSearchCtx<'_, DB>) -> Vec<TypeTree> {
     let module = ctx.scope.module();
     let mut defs = FxHashSet::default();
     defs.insert(ScopeDef::ModuleDef(ModuleDef::Module(module)));
@@ -270,27 +279,27 @@ pub fn term_search<DB: HirDatabase>(ctx: TermSearchCtx<'_, DB>) -> Vec<TypeTree>
     let mut lookup = LookupTable::new();
 
     // Try trivial tactic first, also populates lookup table
-    let mut solutions: Vec<TypeTree> = tactics::trivial(&ctx, &defs, &mut lookup).collect();
+    let mut solutions: Vec<TypeTree> = tactics::trivial(ctx, &defs, &mut lookup).collect();
     // Use well known types tactic before iterations as it does not depend on other tactics
-    solutions.extend(tactics::famous_types(&ctx, &defs, &mut lookup));
+    solutions.extend(tactics::famous_types(ctx, &defs, &mut lookup));
 
-    let mut solution_found = !solutions.is_empty();
+    // let mut solution_found = !solutions.is_empty();
 
     for _ in 0..ctx.config.depth {
         lookup.new_round();
 
-        solutions.extend(tactics::type_constructor(&ctx, &defs, &mut lookup));
-        solutions.extend(tactics::free_function(&ctx, &defs, &mut lookup));
-        solutions.extend(tactics::impl_method(&ctx, &defs, &mut lookup));
-        solutions.extend(tactics::struct_projection(&ctx, &defs, &mut lookup));
-        solutions.extend(tactics::impl_static_method(&ctx, &defs, &mut lookup));
+        solutions.extend(tactics::type_constructor(ctx, &defs, &mut lookup));
+        solutions.extend(tactics::free_function(ctx, &defs, &mut lookup));
+        solutions.extend(tactics::impl_method(ctx, &defs, &mut lookup));
+        solutions.extend(tactics::struct_projection(ctx, &defs, &mut lookup));
+        solutions.extend(tactics::impl_static_method(ctx, &defs, &mut lookup));
 
         // Break after 1 round after successful solution
-        if solution_found {
-            break;
-        }
-
-        solution_found = !solutions.is_empty();
+        // if solution_found {
+        //     break;
+        // }
+        //
+        // solution_found = !solutions.is_empty();
 
         // Discard not interesting `ScopeDef`s for speedup
         for def in lookup.exhausted_scopedefs() {
@@ -298,5 +307,5 @@ pub fn term_search<DB: HirDatabase>(ctx: TermSearchCtx<'_, DB>) -> Vec<TypeTree>
         }
     }
 
-    solutions.into_iter().unique().collect()
+    solutions.into_iter().filter(|it| !it.is_many()).unique().collect()
 }

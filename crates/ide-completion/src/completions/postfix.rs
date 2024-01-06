@@ -383,17 +383,21 @@ fn main() {
 }
 "#,
             expect![[r#"
-                sn box    Box::new(expr)
-                sn call   function(expr)
-                sn dbg    dbg!(expr)
-                sn dbgr   dbg!(&expr)
-                sn if     if expr {}
-                sn match  match expr {}
-                sn not    !expr
-                sn ref    &expr
-                sn refm   &mut expr
-                sn unsafe unsafe {}
-                sn while  while expr {}
+                sn bar
+                sn box      Box::new(expr)
+                sn call     function(expr)
+                sn dbg      dbg!(expr)
+                sn dbgr     dbg!(&expr)
+                sn false
+                sn foo(...)
+                sn if       if expr {}
+                sn match    match expr {}
+                sn not      !expr
+                sn ref      &expr
+                sn refm     &mut expr
+                sn true
+                sn unsafe   unsafe {}
+                sn while    while expr {}
             "#]],
         );
     }

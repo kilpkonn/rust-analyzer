@@ -412,7 +412,7 @@ impl flags::AnalysisStats {
                         ..Default::default()
                     },
                 };
-                let found_terms = hir::term_search::term_search(ctx);
+                let found_terms = hir::term_search::term_search(&ctx);
 
                 if found_terms.is_empty() {
                     acc.tail_expr_no_term += 1;
