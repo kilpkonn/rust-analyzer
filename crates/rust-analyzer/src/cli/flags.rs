@@ -98,6 +98,8 @@ xflags::xflags! {
             /// Validate term search by running `cargo check` on every response.
             /// Note that this also temporarily modifies the files on disk, use with caution!
             optional --validate-term-search
+
+            optional --term-search-depth depth: usize
         }
 
         /// Run unit tests of the project using mir interpreter
@@ -224,6 +226,7 @@ pub struct AnalysisStats {
     pub skip_const_eval: bool,
     pub run_all_ide_things: bool,
     pub run_term_search: bool,
+    pub term_search_depth: Option<usize>,
     pub validate_term_search: bool,
 }
 

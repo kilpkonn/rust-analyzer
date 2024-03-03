@@ -52,6 +52,7 @@ xflags::xflags! {
         cmd bb {
             required suffix: String
         }
+        cmd validation {}
     }
 }
 
@@ -73,6 +74,7 @@ pub enum XtaskCmd {
     PublishReleaseNotes(PublishReleaseNotes),
     Metrics(Metrics),
     Bb(Bb),
+    Validation(Validation),
 }
 
 #[derive(Debug)]
@@ -159,6 +161,9 @@ pub struct Metrics {
 pub struct Bb {
     pub suffix: String,
 }
+
+#[derive(Debug)]
+pub struct Validation;
 
 impl Xtask {
     #[allow(dead_code)]

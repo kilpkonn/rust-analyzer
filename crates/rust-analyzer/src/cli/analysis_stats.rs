@@ -354,6 +354,7 @@ impl flags::AnalysisStats {
         struct Acc {
             tail_expr_syntax_hits: u64,
             tail_expr_no_term: u64,
+            tail_expr_total_terms: u64,
             total_tail_exprs: u64,
             error_codes: FxHashMap<String, u32>,
             syntax_errors: u32,
@@ -413,6 +414,7 @@ impl flags::AnalysisStats {
                     goal: target_ty,
                     config: hir::term_search::TermSearchConfig {
                         enable_borrowcheck: true,
+                        depth: self.term_search_depth.unwrap_or(6),
                         ..Default::default()
                     },
                 };
@@ -432,6 +434,8 @@ impl flags::AnalysisStats {
                 let todo = syntax::ast::make::ext::expr_todo().to_string();
                 let mut formatter = |_: &hir::Type| todo.clone();
                 let mut syntax_hit_found = false;
+
+                acc.tail_expr_total_terms += found_terms.len() as u64;
                 for term in found_terms {
                     let generated =
                         term.gen_source_code(&scope, &mut formatter, false, true).unwrap();
@@ -512,6 +516,15 @@ impl flags::AnalysisStats {
             acc.total_tail_exprs,
             percentage(acc.total_tail_exprs - acc.tail_expr_no_term, acc.total_tail_exprs)
         ));
+        bar.println(format!(
+            "Avg exprs per term: {:.1}",
+            if acc.total_tail_exprs == 0 {
+                0.0
+            } else {
+                acc.tail_expr_total_terms as f64 / acc.total_tail_exprs as f64
+            },
+        ));
+
         if self.validate_term_search {
             bar.println(format!(
                 "Tail Exprs total errors: {}, syntax errors: {}, error codes:",
@@ -526,7 +539,9 @@ impl flags::AnalysisStats {
         }
         bar.println(format!(
             "Term search avg time: {}ms",
-            term_search_time.time.as_millis() as u64 / acc.total_tail_exprs
+            (term_search_time.time.as_millis() as u64)
+                .checked_div(acc.total_tail_exprs)
+                .unwrap_or(term_search_time.time.as_millis() as u64)
         ));
         bar.println(format!("{:<20} {}", "Term search:", term_search_time));
         report_metric("term search time", term_search_time.time.as_millis() as u64, "ms");
