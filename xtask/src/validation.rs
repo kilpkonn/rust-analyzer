@@ -8,14 +8,12 @@ impl flags::Validation {
     pub(crate) fn run(self, sh: &Shell) -> anyhow::Result<()> {
         cmd!(sh, "cargo build --release --package rust-analyzer --bin rust-analyzer").run()?;
 
-        let categories: Vec<Category> = load_categories().unwrap_or_else(|| {
-            fetch_categories()
-                .categories
-                .into_iter()
-                .filter(|it| it.crates_count > 1000)
-                // .take(1)
-                .collect()
-        });
+        let categories: Vec<Category> = fetch_categories()
+            .categories
+            .into_iter()
+            .filter(|it| it.crates_count > 1000)
+            // .take(1)
+            .collect();
 
         for depth in 0..=10 {
             let filename = format!("results_{depth}.csv");
@@ -24,19 +22,16 @@ impl flags::Validation {
             categories
                 .iter()
                 .flat_map(|category| {
-                    load_to_crates(&category, 5)
-                        .unwrap_or_else(|| fetch_top_crates(&category, 5))
-                        .into_iter()
-                        .flat_map(move |krate| {
-                            let dirname = download_crate(
-                                sh,
-                                &category.id,
-                                &krate.name,
-                                &krate.version.clone().unwrap_or(krate.newest_version.clone()),
-                            );
+                    fetch_top_crates(&category, 5).into_iter().flat_map(move |krate| {
+                        let dirname = download_crate(
+                            sh,
+                            &category.id,
+                            &krate.name,
+                            &krate.version.clone().unwrap_or(krate.newest_version.clone()),
+                        );
 
-                            run_on_crate(sh, &dirname, &category, &krate, depth)
-                        })
+                        run_on_crate(sh, &dirname, &category, &krate, depth)
+                    })
                 })
                 .for_each(|line| {
                     wtr.serialize(line).unwrap();
@@ -72,6 +67,7 @@ struct CratesList {
     crates: Vec<Crate>,
 }
 
+#[allow(dead_code)]
 fn load_to_crates(category: &Category, count: usize) -> Option<Vec<Crate>> {
     let cat_name = &category.id;
     let dirname = format!("{FILES_PATH}/{cat_name}");
@@ -129,12 +125,13 @@ fn fetch_categories() -> CategoriesList {
     resp
 }
 
+#[allow(dead_code)]
 fn load_categories() -> Option<Vec<Category>> {
     let categories = std::fs::read_dir(FILES_PATH)
         .ok()?
         .filter_map(|it| it.ok())
         .filter(|it| it.file_type().map(|ty| ty.is_dir()).unwrap_or(false))
-        .map(|it| Category { id: it.file_name().into_string().unwrap(), crates_count: 2000 })
+        .map(|it| Category { id: it.file_name().into_string().unwrap(), crates_count: 0 })
         .collect();
     Some(categories)
 }
