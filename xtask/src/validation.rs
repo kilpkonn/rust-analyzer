@@ -15,7 +15,7 @@ impl flags::Validation {
             // .take(1)
             .collect();
 
-        for depth in 0..=10 {
+        for depth in 6..=6 {
             let filename = format!("results_{depth}.csv");
             std::fs::remove_file(&filename).ok();
             let mut wtr = csv::Writer::from_writer(std::fs::File::create(&filename).unwrap());

@@ -1,8 +1,9 @@
 //! Term search
 
+use std::time::{Duration, Instant};
+
 use hir_def::type_ref::Mutability;
 use hir_ty::db::HirDatabase;
-use itertools::Itertools;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::{ModuleDef, ScopeDef, Semantics, SemanticsScope, Type};
@@ -127,6 +128,13 @@ impl LookupTable {
             self.types_wishlist.insert(ty.clone());
         }
 
+        // Collapse suggestions if there are many
+        if let Some(res) = &res {
+            if res.len() > self.many_threshold {
+                return Some(vec![Expr::Many(ty.clone())]);
+            }
+        }
+
         res
     }
 
@@ -156,6 +164,13 @@ impl LookupTable {
 
         if res.is_none() {
             self.types_wishlist.insert(ty.clone());
+        }
+
+        // Collapse suggestions if there are many
+        if let Some(res) = &res {
+            if res.len() > self.many_threshold {
+                return Some(vec![Expr::Many(ty.clone())]);
+            }
         }
 
         res
@@ -257,11 +272,12 @@ pub struct TermSearchConfig {
     pub many_alternatives_threshold: usize,
     /// Depth of the search eg. number of cycles to run
     pub depth: usize,
+    pub timeout: Option<Duration>,
 }
 
 impl Default for TermSearchConfig {
     fn default() -> Self {
-        Self { enable_borrowcheck: true, many_alternatives_threshold: 1, depth: 6 }
+        Self { enable_borrowcheck: true, many_alternatives_threshold: 1, depth: 5, timeout: None }
     }
 }
 
@@ -297,20 +313,57 @@ pub fn term_search<DB: HirDatabase>(ctx: &TermSearchCtx<'_, DB>) -> Vec<Expr> {
     });
 
     let mut lookup = LookupTable::new(ctx.config.many_alternatives_threshold, ctx.goal.clone());
+    let start = Instant::now();
 
     // Try trivial tactic first, also populates lookup table
-    let mut solutions: Vec<Expr> = tactics::trivial(ctx, &defs, &mut lookup).collect();
+    let mut solutions: FxHashSet<Expr> = tactics::trivial(ctx, &defs, &mut lookup).collect();
     // Use well known types tactic before iterations as it does not depend on other tactics
     solutions.extend(tactics::famous_types(ctx, &defs, &mut lookup));
 
     for _ in 0..ctx.config.depth {
         lookup.new_round();
 
+        if let Some(timeout) = ctx.config.timeout {
+            if start.elapsed() > timeout {
+                break;
+            }
+        }
+
         solutions.extend(tactics::type_constructor(ctx, &defs, &mut lookup));
+        if let Some(timeout) = ctx.config.timeout {
+            if start.elapsed() > timeout {
+                break;
+            }
+        }
+
         solutions.extend(tactics::free_function(ctx, &defs, &mut lookup));
+        if let Some(timeout) = ctx.config.timeout {
+            if start.elapsed() > timeout {
+                break;
+            }
+        }
+
         solutions.extend(tactics::impl_method(ctx, &defs, &mut lookup));
+        if let Some(timeout) = ctx.config.timeout {
+            if start.elapsed() > timeout {
+                break;
+            }
+        }
+
         solutions.extend(tactics::struct_projection(ctx, &defs, &mut lookup));
+        if let Some(timeout) = ctx.config.timeout {
+            if start.elapsed() > timeout {
+                break;
+            }
+        }
+
         solutions.extend(tactics::impl_static_method(ctx, &defs, &mut lookup));
+        if let Some(timeout) = ctx.config.timeout {
+            if start.elapsed() > timeout {
+                break;
+            }
+        }
+
         solutions.extend(tactics::make_tuple(ctx, &defs, &mut lookup));
 
         // Discard not interesting `ScopeDef`s for speedup
@@ -319,5 +372,5 @@ pub fn term_search<DB: HirDatabase>(ctx: &TermSearchCtx<'_, DB>) -> Vec<Expr> {
         }
     }
 
-    solutions.into_iter().filter(|it| !it.is_many()).unique().collect()
+    solutions.into_iter().filter(|it| !it.is_many()).collect()
 }
