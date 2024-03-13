@@ -415,7 +415,7 @@ impl flags::AnalysisStats {
                     config: hir::term_search::TermSearchConfig {
                         enable_borrowcheck: true,
                         depth: self.term_search_depth.unwrap_or(6),
-                        timeout: Some(std::time::Duration::from_millis(60)),
+                        timeout: Some(std::time::Duration::from_millis(2000)),
                         ..Default::default()
                     },
                 };

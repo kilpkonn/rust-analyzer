@@ -15,7 +15,7 @@ impl flags::Validation {
             // .take(1)
             .collect();
 
-        for depth in 6..=6 {
+        for depth in 0..=10 {
             let filename = format!("results_{depth}.csv");
             std::fs::remove_file(&filename).ok();
             let mut wtr = csv::Writer::from_writer(std::fs::File::create(&filename).unwrap());
@@ -178,7 +178,7 @@ fn run_on_crate(
     let depth_str = depth.to_string();
     let output = cmd!(
         sh,
-        "./target/release/rust-analyzer analysis-stats {dirname}/Cargo.toml --run-term-search --skip-lowering --term-search-depth {depth_str}"
+        "./target/release/rust-analyzer analysis-stats {dirname}/Cargo.toml --parallel --run-term-search --term-search-depth {depth_str}"
     )
     .read()?;
 
