@@ -350,10 +350,11 @@ impl flags::AnalysisStats {
         file_ids.sort();
         file_ids.dedup();
 
-        #[derive(Debug, Default)]
+       #[derive(Debug, Default)]
         struct Acc {
             tail_expr_syntax_hits: u64,
             tail_expr_no_term: u64,
+            tail_expr_total_terms: u64,
             total_tail_exprs: u64,
             error_codes: FxHashMap<String, u32>,
             syntax_errors: u32,
@@ -413,10 +414,11 @@ impl flags::AnalysisStats {
                     goal: target_ty,
                     config: hir::term_search::TermSearchConfig {
                         enable_borrowcheck: true,
+                        depth: 3,
                         ..Default::default()
                     },
                 };
-                let found_terms = hir::term_search::term_search(&ctx);
+               let found_terms = hir::term_search::term_search(&ctx);
 
                 if found_terms.is_empty() {
                     acc.tail_expr_no_term += 1;
@@ -432,6 +434,8 @@ impl flags::AnalysisStats {
                 let todo = syntax::ast::make::ext::expr_todo().to_string();
                 let mut formatter = |_: &hir::Type| todo.clone();
                 let mut syntax_hit_found = false;
+
+                acc.tail_expr_total_terms += found_terms.len() as u64;
                 for term in found_terms {
                     let generated =
                         term.gen_source_code(&scope, &mut formatter, false, true).unwrap();
@@ -453,8 +457,11 @@ impl flags::AnalysisStats {
                                     err_idx += 7;
                                     let err_code = &err[err_idx..err_idx + 4];
                                     match err_code {
-                                        "0282" => continue,                              // Byproduct of testing method
-                                        "0277" if generated.contains(&todo) => continue, // See https://github.com/rust-lang/rust/issues/69882
+                                        "0282" | "0283" => continue, // Byproduct of testing method
+                                        "0277" | "0308" if generated.contains(&todo) => continue, // See https://github.com/rust-lang/rust/issues/69882
+                                        // FIXME: In some rare cases `AssocItem::container_or_implemented_trait` returns `None` for trait methods.
+                                        // Generated code is valid in case traits are imported
+                                        "0599" if err.contains("the following trait is implemented but not in scope") => continue,
                                         _ => (),
                                     }
                                     bar.println(err);
@@ -509,6 +516,15 @@ impl flags::AnalysisStats {
             acc.total_tail_exprs,
             percentage(acc.total_tail_exprs - acc.tail_expr_no_term, acc.total_tail_exprs)
         ));
+        bar.println(format!(
+            "Avg exprs per term: {:.1}",
+            if acc.total_tail_exprs == 0 {
+                0.0
+            } else {
+                acc.tail_expr_total_terms as f64 / acc.total_tail_exprs as f64
+            },
+        ));
+
         if self.validate_term_search {
             bar.println(format!(
                 "Tail Exprs total errors: {}, syntax errors: {}, error codes:",
@@ -523,7 +539,9 @@ impl flags::AnalysisStats {
         }
         bar.println(format!(
             "Term search avg time: {}ms",
-            term_search_time.time.as_millis() as u64 / acc.total_tail_exprs
+            (term_search_time.time.as_millis() as u64)
+                .checked_div(acc.total_tail_exprs)
+                .unwrap_or(term_search_time.time.as_millis() as u64)
         ));
         bar.println(format!("{:<20} {}", "Term search:", term_search_time));
         report_metric("term search time", term_search_time.time.as_millis() as u64, "ms");
