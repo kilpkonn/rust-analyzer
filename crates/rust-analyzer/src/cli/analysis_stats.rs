@@ -351,10 +351,12 @@ impl flags::AnalysisStats {
         struct Acc {
             tail_expr_syntax_hits: u64,
             tail_expr_no_term: u64,
+            tail_expr_total_terms: u64,
             total_tail_exprs: u64,
-            errors: u64,
+            syntax_errors: u32,
         }
 
+        let mut sw = self.stop_watch();
         let mut acc: Acc = Default::default();
         bar.tick();
 
@@ -419,9 +421,10 @@ impl flags::AnalysisStats {
                 };
 
                 fn trim(s: &str) -> String {
-                    s.chars().into_iter().filter(|c| !c.is_whitespace()).collect()
+                    s.chars().filter(|c| !c.is_whitespace()).collect()
                 }
 
+                acc.tail_expr_total_terms += assists.len() as u64;
                 let mut syntax_hit_found = false;
                 for (_, assist) in assists {
                     let generated = assist.gen_source_code(&defs, &sema);
@@ -436,8 +439,8 @@ impl flags::AnalysisStats {
 
                     let res = ws.run_build_scripts(&cargo_config, no_progress).unwrap();
                     if let Some(err) = res.error() {
-                        acc.errors += 1;
                         println!("\n{}", err);
+                        acc.syntax_errors += 1;
                     }
                 }
 
@@ -462,19 +465,37 @@ impl flags::AnalysisStats {
 
             bar.inc(1);
         }
+
+        let term_search_time = sw.elapsed();
         bar.println(format!(
-            "Tail Expr syntatix hits: {}/{} ({})%",
+            "Tail Expr syntactic hits: {}/{} ({}%)",
             acc.tail_expr_syntax_hits,
             acc.total_tail_exprs,
             percentage(acc.tail_expr_syntax_hits, acc.total_tail_exprs)
         ));
         bar.println(format!(
-            "Tail Exprs found: {}/{} ({})%",
+            "Tail Exprs found: {}/{} ({}%)",
             acc.total_tail_exprs - acc.tail_expr_no_term,
             acc.total_tail_exprs,
             percentage(acc.total_tail_exprs - acc.tail_expr_no_term, acc.total_tail_exprs)
         ));
-        bar.println(format!("Tail Exprs errors: {}", acc.errors));
+        bar.println(format!(
+            "Avg exprs per term: {:.1}",
+            if acc.total_tail_exprs == 0 {
+                0.0
+            } else {
+                acc.tail_expr_total_terms as f64 / acc.total_tail_exprs as f64
+            },
+        ));
+
+        bar.println(format!(
+            "Term search avg time: {}ms",
+            (term_search_time.time.as_millis() as u64)
+                .checked_div(acc.total_tail_exprs)
+                .unwrap_or(term_search_time.time.as_millis() as u64)
+        ));
+        bar.println(format!("{:<20} {}", "Term search:", term_search_time));
+        report_metric("term search time", term_search_time.time.as_millis() as u64, "ms");
 
         bar.finish_and_clear();
     }

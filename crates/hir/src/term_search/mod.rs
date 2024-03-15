@@ -14,7 +14,7 @@ pub fn term_search(
     defs: &FxHashSet<ScopeDef>,
     db: &dyn HirDatabase,
 ) -> Vec<(u32, TypeTree)> {
-    dfs_term_search(goal, defs, db, 2)
+    dfs_term_search(goal, defs, db, 1)
 }
 
 fn dfs_search_assoc_item(
