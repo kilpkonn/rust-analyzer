@@ -8,15 +8,17 @@
 //! This binary is integrated into the `cargo` command line by using an alias in
 //! `.cargo/config`.
 
-#![warn(rust_2018_idioms, unused_lifetimes, semicolon_in_expressions_from_macros)]
+#![warn(rust_2018_idioms, unused_lifetimes)]
+#![allow(clippy::print_stderr, clippy::print_stdout)]
 
 mod flags;
 
-mod install;
-mod release;
 mod dist;
-mod publish;
+mod install;
 mod metrics;
+mod publish;
+mod release;
+mod validation;
 
 use anyhow::bail;
 use std::{
@@ -50,6 +52,7 @@ fn main() -> anyhow::Result<()> {
             )?;
             Ok(())
         }
+        flags::XtaskCmd::Validation(cmd) => cmd.run(sh),
     }
 }
 
