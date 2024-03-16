@@ -23,6 +23,8 @@ xflags::xflags! {
             optional --mimalloc
             /// Use jemalloc allocator for server
             optional --jemalloc
+            /// build in release with debug info set to 2
+            optional --dev-rel
         }
 
         cmd fuzz-tests {}
@@ -50,6 +52,7 @@ xflags::xflags! {
         cmd bb {
             required suffix: String
         }
+        cmd validation {}
     }
 }
 
@@ -71,6 +74,7 @@ pub enum XtaskCmd {
     PublishReleaseNotes(PublishReleaseNotes),
     Metrics(Metrics),
     Bb(Bb),
+    Validation(Validation),
 }
 
 #[derive(Debug)]
@@ -80,6 +84,7 @@ pub struct Install {
     pub server: bool,
     pub mimalloc: bool,
     pub jemalloc: bool,
+    pub dev_rel: bool,
 }
 
 #[derive(Debug)]
@@ -157,6 +162,9 @@ pub struct Bb {
     pub suffix: String,
 }
 
+#[derive(Debug)]
+pub struct Validation;
+
 impl Xtask {
     #[allow(dead_code)]
     pub fn from_env_or_exit() -> Self {
@@ -187,7 +195,7 @@ impl Install {
         } else {
             Malloc::System
         };
-        Some(ServerOpt { malloc })
+        Some(ServerOpt { malloc, dev_rel: self.dev_rel })
     }
     pub(crate) fn client(&self) -> Option<ClientOpt> {
         if !self.client && self.server {

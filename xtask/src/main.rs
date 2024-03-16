@@ -18,6 +18,7 @@ mod install;
 mod metrics;
 mod publish;
 mod release;
+mod validation;
 
 use anyhow::bail;
 use std::{
@@ -51,6 +52,7 @@ fn main() -> anyhow::Result<()> {
             )?;
             Ok(())
         }
+        flags::XtaskCmd::Validation(cmd) => cmd.run(sh),
     }
 }
 
