@@ -15,7 +15,7 @@ impl flags::Validation {
             // .take(1)
             .collect();
 
-        for depth in 0..=10 {
+        for depth in 2..=2 {
             let filename = format!("results_{depth}.csv");
             std::fs::remove_file(&filename).ok();
             let mut wtr = csv::Writer::from_writer(std::fs::File::create(&filename).unwrap());
@@ -163,6 +163,7 @@ struct SynthesisResult {
     syntax_hits: u64,
     found: u64,
     suggestions_per_expr: f64,
+    latency_violations: u64,
     avg_time_ms: u64,
     total: u64,
     depth: usize,
@@ -185,17 +186,20 @@ fn run_on_crate(
     let re_syntax_hits = Regex::new(r"Tail Expr syntactic hits: (\d+)/(\d+)").unwrap();
     let re_found = Regex::new(r"Tail Exprs found: (\d+)/(\d+)").unwrap();
     let re_terms_per_expr = Regex::new(r"Avg exprs per term: (\d+\.\d?)").unwrap();
+    let re_latency = Regex::new(r"Latency violations: (\d+)").unwrap();
     let re_avg_time = Regex::new(r"Term search avg time: (\d+)ms").unwrap();
 
     let syntax_caps = re_syntax_hits.captures(&output).unwrap();
     let found_caps = re_found.captures(&output).unwrap();
     let terms_per_expr_caps = re_terms_per_expr.captures(&output).unwrap();
+    let latency = re_latency.captures(&output).unwrap();
     let time_caps = re_avg_time.captures(&output).unwrap();
 
     Ok(SynthesisResult {
         syntax_hits: syntax_caps.get(1).unwrap().as_str().parse().unwrap(),
         found: found_caps.get(1).unwrap().as_str().parse().unwrap(),
         suggestions_per_expr: terms_per_expr_caps.get(1).unwrap().as_str().parse().unwrap(),
+        latency_violations: latency.get(1).unwrap().as_str().parse().unwrap(),
         avg_time_ms: time_caps.get(1).unwrap().as_str().parse().unwrap(),
         total: syntax_caps.get(2).unwrap().as_str().parse().unwrap(),
         depth,

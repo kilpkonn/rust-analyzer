@@ -358,6 +358,7 @@ impl flags::AnalysisStats {
             total_tail_exprs: u64,
             error_codes: FxHashMap<String, u32>,
             syntax_errors: u32,
+            latency_violations: u64,
         }
 
         let mut acc: Acc = Default::default();
@@ -415,11 +416,17 @@ impl flags::AnalysisStats {
                     config: hir::term_search::TermSearchConfig {
                         enable_borrowcheck: true,
                         depth: self.term_search_depth.unwrap_or(6),
-                        timeout: Some(std::time::Duration::from_millis(2000)),
+                        timeout: Some(std::time::Duration::from_millis(200)),
                         ..Default::default()
                     },
                 };
+
+                let start = std::time::Instant::now();
                 let found_terms = hir::term_search::term_search(&ctx);
+
+                if start.elapsed().as_millis() > 100 {
+                    acc.latency_violations += 1;
+                }
 
                 if found_terms.is_empty() {
                     acc.tail_expr_no_term += 1;
@@ -525,6 +532,7 @@ impl flags::AnalysisStats {
                 acc.tail_expr_total_terms as f64 / acc.total_tail_exprs as f64
             },
         ));
+        bar.println(format!("Latency violations: {}", acc.latency_violations,));
 
         if self.validate_term_search {
             bar.println(format!(
