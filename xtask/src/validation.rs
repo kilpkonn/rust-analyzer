@@ -15,23 +15,28 @@ impl flags::Validation {
             // .take(1)
             .collect();
 
-        for depth in 2..=2 {
+        let crates: Vec<_> = categories
+            .iter()
+            .flat_map(|category| {
+                fetch_top_crates(&category, 5).into_iter().map(move |krate| (category, krate))
+            })
+            .collect();
+
+        for depth in 0..=5 {
             let filename = format!("results_{depth}.csv");
             std::fs::remove_file(&filename).ok();
             let mut wtr = csv::Writer::from_writer(std::fs::File::create(&filename).unwrap());
-            categories
+            crates
                 .iter()
-                .flat_map(|category| {
-                    fetch_top_crates(&category, 5).into_iter().flat_map(move |krate| {
-                        let dirname = download_crate(
-                            sh,
-                            &category.id,
-                            &krate.name,
-                            &krate.version.clone().unwrap_or(krate.newest_version.clone()),
-                        );
+                .flat_map(move |(category, krate)| {
+                    let dirname = download_crate(
+                        sh,
+                        &category.id,
+                        &krate.name,
+                        &krate.version.clone().unwrap_or(krate.newest_version.clone()),
+                    );
 
-                        run_on_crate(sh, &dirname, &category, &krate, depth)
-                    })
+                    run_on_crate(sh, &dirname, &category, &krate, depth)
                 })
                 .for_each(|line| {
                     wtr.serialize(line).unwrap();

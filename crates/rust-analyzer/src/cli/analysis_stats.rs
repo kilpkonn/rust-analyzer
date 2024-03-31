@@ -33,7 +33,7 @@ use profile::{Bytes, StopWatch};
 use project_model::{CargoConfig, ProjectManifest, ProjectWorkspace, RustLibSource};
 use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
-use syntax::{AstNode, SyntaxNode};
+use syntax::{AstNode, SourceFile, SyntaxNode};
 use vfs::{AbsPathBuf, FileId, Vfs, VfsPath};
 
 use crate::cli::{
@@ -416,7 +416,7 @@ impl flags::AnalysisStats {
                     config: hir::term_search::TermSearchConfig {
                         enable_borrowcheck: true,
                         depth: self.term_search_depth.unwrap_or(6),
-                        timeout: Some(std::time::Duration::from_millis(200)),
+                        timeout: Some(std::time::Duration::from_millis(1000)),
                         ..Default::default()
                     },
                 };
@@ -439,6 +439,7 @@ impl flags::AnalysisStats {
                     s.chars().filter(|c| !c.is_whitespace()).collect()
                 }
 
+                let original_ast = SourceFile::parse(&db.file_text(file_id));
                 let todo = syntax::ast::make::ext::expr_todo().to_string();
                 let mut formatter = |_: &hir::Type| todo.clone();
                 let mut syntax_hit_found = false;
@@ -447,7 +448,11 @@ impl flags::AnalysisStats {
                 for term in found_terms {
                     let generated =
                         term.gen_source_code(&scope, &mut formatter, false, true).unwrap();
-                    syntax_hit_found |= trim(&original_text) == trim(&generated);
+                    let generated_ast =
+                        original_ast.reparse(&ide::Indel::replace(range, generated.clone()));
+
+                    let matches_original = original_ast == generated_ast;
+                    syntax_hit_found |= matches_original;
 
                     // Validate if type-checks
                     let mut txt = file_txt.to_string();
