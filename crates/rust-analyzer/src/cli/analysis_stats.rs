@@ -359,6 +359,7 @@ impl flags::AnalysisStats {
             error_codes: FxHashMap<String, u32>,
             syntax_errors: u32,
             latency_violations: u64,
+            total_time: u128,
         }
 
         let mut acc: Acc = Default::default();
@@ -424,6 +425,8 @@ impl flags::AnalysisStats {
                 let start = std::time::Instant::now();
                 let found_terms = hir::term_search::term_search(&ctx);
 
+                let elapsed = start.elapsed().as_millis();
+                acc.total_time += elapsed;
                 if start.elapsed().as_millis() > 100 {
                     acc.latency_violations += 1;
                 }
@@ -553,7 +556,7 @@ impl flags::AnalysisStats {
         }
         bar.println(format!(
             "Term search avg time: {}ms",
-            (term_search_time.time.as_millis() as u64)
+            (acc.total_time as u64)
                 .checked_div(acc.total_tail_exprs)
                 .unwrap_or(term_search_time.time.as_millis() as u64)
         ));
